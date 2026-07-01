@@ -6,7 +6,10 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "httpx>=0.28.1",
+    "micro>=3.1.0",
+    "ollama>=0.6.2",
     "python-chess>=1.999",
+    "requests>=2.34.2",
 ]
 
 [dependency-groups]
