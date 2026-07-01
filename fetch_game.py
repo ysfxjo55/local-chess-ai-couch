@@ -4,7 +4,7 @@ import chess.pgn
 
 def fetch_last_game_pgn(username):
     headers = {
-        "User-Agent": "ChessAI-CoachAgent/1.0 (ysfxjo2005@gmail.com)"
+        "User-Agent": "ChessAI-CoachAgent/1.0 (https://github.com/ysfxjo55/local-chess-ai-couch)"
     }
     
     archive_url = f"https://api.chess.com/pub/player/{username}/games/archives"
