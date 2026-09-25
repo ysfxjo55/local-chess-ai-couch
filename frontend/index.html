@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Chess Coach: a self-hosted, single-user web app that analyzes your Chess.com games with a local Stockfish engine and an OpenAI (GPT-4.1) coach. Sync games from Chess.com, get full move-by-move Stockfish analysis (blunders/mistakes/inaccuracies, centipawn loss, best-move suggestions), drill your own flagged blunders/mistakes as a personal puzzle queue (find the fix yourself before it's revealed), chat with an AI coach about a specific game or your whole history, and view accuracy/win-rate/opening/phase stats over time, including a per-game time control (bullet/blitz/rapid/daily) breakdown. Engine analysis runs locally and free; the coach chat uses the OpenAI API."
+    />
+    <title>Chess Coach</title>
+    <style>
+      body {
+        background: #0b0f14;
+        color: #e6e9ee;
+        font-family:
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <!--
+        Fallback content for clients that don't execute JavaScript (e.g. link
+        previews, crawlers). The real app is a React SPA mounted here; this
+        block is replaced as soon as React hydrates and is never seen by a
+        normal browser with JS enabled.
+      -->
+      <main style="max-width: 640px; margin: 2rem auto; padding: 0 1rem">
+        <h1>Chess Coach</h1>
+        <p>
+          A self-hosted, single-user web app that analyzes your Chess.com
+          games with a local Stockfish chess engine and an OpenAI (GPT-4.1)
+          coach. Engine analysis runs locally and free; the coach chat uses
+          the OpenAI API.
+        </p>
+        <h2>Features</h2>
+        <ul>
+          <li>
+            Sign-in with just a Chess.com username — no password or sign-up
+            step.
+          </li>
+          <li>
+            Game sync: pulls games directly from Chess.com and runs full
+            Stockfish engine analysis on every move.
+          </li>
+          <li>
+            Game dashboard: all synced games with opponent, result, color,
+            date, and per-game blunder/mistake/inaccuracy counts.
+          </li>
+          <li>
+            Game detail view: move-by-move breakdown with eval before/after,
+            centipawn loss, move classification, and the engine's suggested
+            best move, alongside a replayable board.
+          </li>
+          <li>AI coach analysis: written coaching commentary per game.</li>
+          <li>
+            Blunder puzzles: a cross-game queue of your own flagged
+            blunders/mistakes — the position is shown right before the
+            mistake and you have to find the fix yourself before the answer
+            is revealed, prioritized toward rapid/daily games over
+            bullet/blitz time-pressure scrambles.
+          </li>
+          <li>
+            Coach chat: conversational AI coach scoped to a single game or a
+            global chat across your whole history, with saved conversations,
+            streamed responses, and a "deep analysis" mode that aggregates
+            real per-move stats across recent games.
+          </li>
+          <li>
+            Insights/stats: accuracy trend, win rate by color, win rate by
+            opening, and blunder rate by game phase (opening/middlegame/
+            endgame), filterable by time range.
+          </li>
+          <li>
+            Repertoire diagnostic: win rate and opening-phase accuracy
+            broken down per opening AND per color you played it as (not
+            just opening name alone), sorted worst-performing first, so you
+            know exactly which specific branch of your repertoire to review.
+          </li>
+          <li>
+            Learned lessons: after each lost game's analysis, the coach
+            distills one reusable rule from it and remembers it — every
+            future coach chat (per-game or global) gets your accumulated
+            lessons injected as context, so a repeated mistake actually
+            gets flagged as familiar instead of treated as new each time.
+          </li>
+          <li>
+            Sparring: live practice games against Maia (a neural-net engine
+            trained on real human games at each rating level, so it plays
+            and blunders like an actual human opponent, not a
+            dumbed-down-but-still-perfect Stockfish). Sessions are steered
+            into your worst-performing opening/color combo from the
+            repertoire diagnostic, and each of your moves is checked
+            locally in real time — a flagged blunder can be taken back and
+            retried. Finished games are analyzed and saved exactly like a
+            synced game.
+          </li>
+        </ul>
+      </main>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

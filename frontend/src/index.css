@@ -1,0 +1,185 @@
+@import "tailwindcss";
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
+@import "@lichess-org/chessground/assets/chessground.base.css";
+@import "@lichess-org/chessground/assets/chessground.brown.css";
+@import "@lichess-org/chessground/assets/chessground.cburnett.css";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * This app is always-dark by design (dark charcoal/obsidian + amber accent,
+ * per the design spec) — there is no light-mode toggle. `:root` and `.dark`
+ * intentionally carry identical values; `.dark` is kept (and applied on
+ * <html> in index.html) only so any shadcn/Radix component logic keyed on
+ * the `.dark` class still behaves the way its own styles expect.
+ */
+
+@theme {
+  --color-obsidian: #121316;
+  --color-slate-surface: #1e2025;
+  --color-slate-surface-raised: #262931;
+  --color-slate-border: #2f333b;
+  --color-amber: #d4a373;
+  --color-amber-bright: #e5b869;
+  --color-blunder: #e5484d;
+  --color-mistake: #f5a623;
+  --color-inaccuracy: #efd81d;
+  --color-good: #6fcf97;
+  --color-excellent: #4aa8ff;
+  --color-ink: #e8e6e1;
+  --color-ink-muted: #9a978f;
+
+  /* A small, muted, "calm" accent family — used alongside amber for chart
+     variety and the login screen's floating pieces, never as the primary
+     brand color. All desaturated to sit quietly on the obsidian background. */
+  --color-dusty-blue: #7c9cbf;
+  --color-sage: #8fad8b;
+  --color-mauve: #c08f93;
+  --color-lavender: #a79bc7;
+  --color-teal: #7bb0a8;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root,
+.dark {
+  --background: var(--color-obsidian);
+  --foreground: var(--color-ink);
+  --card: var(--color-slate-surface);
+  --card-foreground: var(--color-ink);
+  --popover: var(--color-slate-surface-raised);
+  --popover-foreground: var(--color-ink);
+  --primary: var(--color-amber);
+  --primary-foreground: var(--color-obsidian);
+  --secondary: var(--color-slate-surface-raised);
+  --secondary-foreground: var(--color-ink);
+  --muted: var(--color-slate-surface);
+  --muted-foreground: var(--color-ink-muted);
+  --accent: var(--color-slate-surface-raised);
+  --accent-foreground: var(--color-ink);
+  --destructive: var(--color-blunder);
+  --border: var(--color-slate-border);
+  --input: var(--color-slate-border);
+  --ring: var(--color-amber-bright);
+  --chart-1: var(--color-excellent);
+  --chart-2: var(--color-good);
+  --chart-3: var(--color-inaccuracy);
+  --chart-4: var(--color-mistake);
+  --chart-5: var(--color-blunder);
+  --radius: 0.625rem;
+  --sidebar: var(--color-slate-surface);
+  --sidebar-foreground: var(--color-ink);
+  --sidebar-primary: var(--color-amber);
+  --sidebar-primary-foreground: var(--color-obsidian);
+  --sidebar-accent: var(--color-slate-surface-raised);
+  --sidebar-accent-foreground: var(--color-ink);
+  --sidebar-border: var(--color-slate-border);
+  --sidebar-ring: var(--color-amber-bright);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    @apply font-sans;
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background-color: var(--color-amber);
+    color: var(--color-obsidian);
+  }
+}
+
+@layer utilities {
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Login screen's ambient floating chess pieces — slow, soft, calm by
+   design (long duration, low opacity, gentle drift+rotate, not a fast or
+   attention-grabbing effect). Disabled entirely for reduced-motion users. */
+@keyframes float-piece {
+  0% {
+    transform: translateY(-12vh) translateX(0) rotate(-8deg);
+    opacity: 0;
+  }
+  8% {
+    opacity: var(--piece-opacity, 0.16);
+  }
+  92% {
+    opacity: var(--piece-opacity, 0.16);
+  }
+  100% {
+    transform: translateY(112vh) translateX(var(--drift, 0px)) rotate(8deg);
+    opacity: 0;
+  }
+}
+
+.animate-float-piece {
+  animation-name: float-piece;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-float-piece {
+    animation: none;
+    display: none;
+  }
+}
