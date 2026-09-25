@@ -9,6 +9,19 @@ wheels/
 # Virtual environments
 .venv
 
+# Node (frontend/)
+node_modules/
+
 # Fetched game data
 *.pgn
 .env
+
+# Local SQLite DB (real user data — passwords/games, never commit)
+app.db
+app.db-shm
+app.db-wal
+app.db.backup-*
+
+# Downloaded Maia Chess weight files (~1-1.5MB each, fetched from
+# CSSLab/maia-chess releases — see backend/maia_weights/README.md)
+backend/maia_weights/*.pb.gz
