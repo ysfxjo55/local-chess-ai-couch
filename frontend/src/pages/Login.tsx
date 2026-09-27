@@ -41,9 +41,15 @@ export default function Login() {
   const creating = mode === "create";
   const claiming = mode === "claim";
   const identityReady = claiming ? chesscomUsername.trim().length >= 3 : username.trim().length >= 3;
+  const passwordMinLength = mode === "sign-in" ? 1 : 12;
+  const passwordTooShort = password.length > 0 && password.length < passwordMinLength;
+  const claimCodeTooShort = claimCode.length > 0 && claimCode.length < 8;
   const switchMode = (next: AccessMode) => {
     setMode(next);
     setError(null);
+    setPassword("");
+    setRegistrationCode("");
+    setClaimCode("");
   };
 
   return (
@@ -80,9 +86,14 @@ export default function Login() {
             )}
             <div className="space-y-2">
               <Label htmlFor="password">{claiming ? "New password" : "Password"}</Label>
-              <Input id="password" type="password" autoComplete={mode === "sign-in" ? "current-password" : "new-password"} placeholder={mode === "sign-in" ? "Your password" : "At least 12 characters"} value={password} onChange={(event) => setPassword(event.target.value)} required minLength={mode === "sign-in" ? 1 : 12} maxLength={256} />
-              {creating && <p className="text-xs text-ink-muted">Use at least 12 characters. Your Chess.com username is connected after sign-in.</p>}
-              {claiming && <p className="text-xs text-ink-muted">Use at least 12 characters for your new password.</p>}
+              <Input id="password" type="password" autoComplete={mode === "sign-in" ? "current-password" : "new-password"} placeholder={mode === "sign-in" ? "Your password" : "At least 12 characters"} value={password} onChange={(event) => setPassword(event.target.value)} aria-invalid={passwordTooShort} aria-describedby="password-help" required minLength={passwordMinLength} maxLength={256} />
+              {passwordTooShort ? (
+                <p id="password-help" className="text-xs text-blunder">Need at least 12 characters ({password.length}/12 so far).</p>
+              ) : creating ? (
+                <p id="password-help" className="text-xs text-ink-muted">Use at least 12 characters. Your Chess.com username is connected after sign-in.</p>
+              ) : claiming ? (
+                <p id="password-help" className="text-xs text-ink-muted">Use at least 12 characters for your new password.</p>
+              ) : null}
             </div>
             {creating && (
               <div className="space-y-2">
@@ -93,12 +104,14 @@ export default function Login() {
             {claiming && (
               <div className="space-y-2">
                 <Label htmlFor="claim-code">Legacy account claim code</Label>
-                <Input id="claim-code" type="password" autoComplete="off" value={claimCode} onChange={(event) => setClaimCode(event.target.value)} required minLength={8} maxLength={256} />
-                <p className="text-xs text-ink-muted">At least 8 characters.</p>
+                <Input id="claim-code" type="password" autoComplete="off" value={claimCode} onChange={(event) => setClaimCode(event.target.value)} aria-invalid={claimCodeTooShort} aria-describedby="claim-code-help" required minLength={8} maxLength={256} />
+                <p id="claim-code-help" className={`text-xs ${claimCodeTooShort ? "text-blunder" : "text-ink-muted"}`}>
+                  {claimCodeTooShort ? `Need at least 8 characters (${claimCode.length}/8 so far).` : "At least 8 characters."}
+                </p>
               </div>
             )}
             {error && <p role="alert" className="rounded-md bg-blunder/10 px-3 py-2 text-sm text-blunder">{error}</p>}
-            <Button type="submit" className="w-full" disabled={submitting || !identityReady || password.length < (mode === "sign-in" ? 1 : 12) || (claiming && claimCode.length < 8)}>
+            <Button type="submit" className="w-full" disabled={submitting || !identityReady || password.length < passwordMinLength || (claiming && claimCode.length < 8)}>
               {submitting ? <LoadingSpinner className="size-4" /> : creating ? "Create secure account" : claiming ? "Claim and secure my data" : "Sign in"}
             </Button>
           </form>
