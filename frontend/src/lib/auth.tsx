@@ -13,6 +13,7 @@ interface AuthState {
 interface AuthContextValue extends AuthState {
   login: (username: string, password: string) => Promise<void>;
   register: (username: string, password: string, registrationCode?: string) => Promise<void>;
+  claimLegacy: (chesscomUsername: string, password: string, claimCode: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshMe: () => Promise<void>;
 }
@@ -74,6 +75,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await authenticate(api.register({ username: username.trim(), password, registration_code: registrationCode || undefined }));
   }
 
+  async function claimLegacy(chesscomUsername: string, password: string, claimCode: string) {
+    await authenticate(api.claimLegacy({ chesscom_username: chesscomUsername.trim(), password, claim_code: claimCode }));
+  }
+
   async function logout() {
     try {
       if (getToken()) await api.logout();
@@ -89,7 +94,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     applyMe(me);
   }
 
-  return <AuthContext.Provider value={{ ...state, login, register, logout, refreshMe }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ ...state, login, register, claimLegacy, logout, refreshMe }}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth(): AuthContextValue {

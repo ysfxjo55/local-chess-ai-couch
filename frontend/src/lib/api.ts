@@ -1,5 +1,6 @@
 import type {
   AnalysisResponse,
+  ClaimAccountRequest,
   CoachHistoryResponse,
   CompletePlanItemResponse,
   ConversationListResponse,
@@ -108,6 +109,7 @@ export const api = {
   me: (signal?: AbortSignal) => request<MeResponse>("/auth/me", { signal }),
   login: (body: LoginRequest) => request<TokenResponse>("/auth/login", { method: "POST", body: JSON.stringify(body) }),
   register: (body: RegisterRequest) => request<TokenResponse>("/auth/register", { method: "POST", body: JSON.stringify(body) }),
+  claimLegacy: (body: ClaimAccountRequest) => request<TokenResponse>("/auth/claim", { method: "POST", body: JSON.stringify(body) }),
   logout: () => request<void>("/auth/logout", { method: "POST" }),
   updateProfile: (body: UpdateProfileRequest) => request<MeResponse>("/auth/profile", { method: "PUT", body: JSON.stringify(body) }),
   setChesscomUsername: (body: SetChesscomUsernameRequest) => request<MeResponse>("/auth/chesscom-username", { method: "PUT", body: JSON.stringify(body) }),

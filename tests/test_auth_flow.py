@@ -10,6 +10,7 @@ def test_fresh_install_supports_private_account_and_learning_flow(tmp_path):
         "DATABASE_URL": f"sqlite:///{db_path}",
         "APP_ENV": "development",
         "JWT_SECRET": "y" * 48,
+        "ACCOUNT_CLAIM_CODE": "legacy-claim-code",
         "CORS_ORIGINS": "http://localhost:5173",
         "TRUSTED_HOSTS": "localhost,testserver",
     }
@@ -35,9 +36,15 @@ with TestClient(app) as client:
     plan = client.get("/api/learning/daily-plan", headers=headers)
     assert plan.status_code == 200 and plan.json()["items"] == []
 
-    logged_out = client.post("/api/auth/logout", headers=headers)
-    assert logged_out.status_code == 204
+    claimed = client.post("/api/auth/claim", headers={"host": "localhost"}, json={"chesscom_username": "Private_Player", "password": "a-replaced-secure-password", "claim_code": "legacy-claim-code"})
+    assert claimed.status_code == 200, claimed.text
     assert client.get("/api/auth/me", headers=headers).status_code == 401
+    claimed_headers = {"host": "localhost", "authorization": f"Bearer {claimed.json()['access_token']}"}
+    assert client.get("/api/auth/me", headers=claimed_headers).status_code == 200
+
+    logged_out = client.post("/api/auth/logout", headers=claimed_headers)
+    assert logged_out.status_code == 204
+    assert client.get("/api/auth/me", headers=claimed_headers).status_code == 401
 '''
     completed = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
     assert completed.returncode == 0, completed.stdout + completed.stderr

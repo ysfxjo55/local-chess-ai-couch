@@ -50,6 +50,23 @@ The frontend is static; it never contains secrets. Build it with `VITE_API_BASE_
    pnpm run deploy
    ```
 
+### Existing-account cutover
+
+If the current site has a legacy passwordless account, **deploy against a copy
+of the existing SQLite database** rather than starting with a blank file. Before
+the first production restart, generate a one-time `ACCOUNT_CLAIM_CODE` and put
+it only in the backend `.env`:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+After the upgraded frontend is live, open **Claim old data** on the sign-in
+page, enter the original Chess.com username, choose a 12+ character password,
+and enter that claim code. This preserves the existing game history while
+securing it with a password. Once the account has been claimed and verified,
+remove `ACCOUNT_CLAIM_CODE` from the backend environment and restart the API.
+
 ## Developer verification
 
 ```bash

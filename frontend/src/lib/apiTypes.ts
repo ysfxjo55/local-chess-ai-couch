@@ -12,6 +12,12 @@ export interface RegisterRequest {
   registration_code?: string;
 }
 
+export interface ClaimAccountRequest {
+  chesscom_username: string;
+  password: string;
+  claim_code: string;
+}
+
 export interface TokenResponse {
   access_token: string;
   token_type: "bearer";

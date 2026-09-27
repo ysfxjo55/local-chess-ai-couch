@@ -8,12 +8,16 @@ import { Label } from "@/components/ui/label";
 import { FloatingPieces } from "@/components/shared/FloatingPieces";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 
+type AccessMode = "sign-in" | "create" | "claim";
+
 export default function Login() {
-  const { login, register, status } = useAuth();
-  const [mode, setMode] = useState<"sign-in" | "create">("sign-in");
+  const { login, register, claimLegacy, status } = useAuth();
+  const [mode, setMode] = useState<AccessMode>("sign-in");
   const [username, setUsername] = useState("");
+  const [chesscomUsername, setChesscomUsername] = useState("");
   const [password, setPassword] = useState("");
   const [registrationCode, setRegistrationCode] = useState("");
+  const [claimCode, setClaimCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -25,7 +29,8 @@ export default function Login() {
     setSubmitting(true);
     try {
       if (mode === "sign-in") await login(username, password);
-      else await register(username, password, registrationCode);
+      else if (mode === "create") await register(username, password, registrationCode);
+      else await claimLegacy(chesscomUsername, password, claimCode);
     } catch (reason) {
       setError(reason instanceof ApiError ? reason.message : "Could not reach the server. Check the connection and try again.");
     } finally {
@@ -34,6 +39,13 @@ export default function Login() {
   }
 
   const creating = mode === "create";
+  const claiming = mode === "claim";
+  const identityReady = claiming ? chesscomUsername.trim().length >= 3 : username.trim().length >= 3;
+  const switchMode = (next: AccessMode) => {
+    setMode(next);
+    setError(null);
+  };
+
   return (
     <div className="relative flex min-h-dvh items-center justify-center overflow-hidden bg-obsidian px-4">
       <FloatingPieces />
@@ -44,20 +56,31 @@ export default function Login() {
           <p className="mt-2 text-sm text-ink-muted">Your game history, practice record, and coaching plan stay tied to your account.</p>
         </div>
 
-        <section className="rounded-xl border border-slate-border bg-slate-surface p-8">
-          <div className="mb-6 grid grid-cols-2 rounded-lg bg-slate-surface-raised p-1" role="tablist" aria-label="Account access">
-            <button type="button" role="tab" aria-selected={!creating} onClick={() => { setMode("sign-in"); setError(null); }} className={`rounded-md px-3 py-2 text-sm font-medium ${!creating ? "bg-amber text-obsidian" : "text-ink-muted"}`}>Sign in</button>
-            <button type="button" role="tab" aria-selected={creating} onClick={() => { setMode("create"); setError(null); }} className={`rounded-md px-3 py-2 text-sm font-medium ${creating ? "bg-amber text-obsidian" : "text-ink-muted"}`}>Create account</button>
+        <section className="rounded-xl border border-slate-border bg-slate-surface p-6 sm:p-8">
+          <div className="mb-6 grid grid-cols-3 rounded-lg bg-slate-surface-raised p-1" role="tablist" aria-label="Account access">
+            <button type="button" role="tab" aria-selected={mode === "sign-in"} onClick={() => switchMode("sign-in")} className={`rounded-md px-2 py-2 text-xs font-medium sm:text-sm ${mode === "sign-in" ? "bg-amber text-obsidian" : "text-ink-muted"}`}>Sign in</button>
+            <button type="button" role="tab" aria-selected={creating} onClick={() => switchMode("create")} className={`rounded-md px-2 py-2 text-xs font-medium sm:text-sm ${creating ? "bg-amber text-obsidian" : "text-ink-muted"}`}>Create</button>
+            <button type="button" role="tab" aria-selected={claiming} onClick={() => switchMode("claim")} className={`rounded-md px-2 py-2 text-xs font-medium sm:text-sm ${claiming ? "bg-amber text-obsidian" : "text-ink-muted"}`}>Claim old data</button>
           </div>
+
+          {claiming && <p className="mb-5 rounded-lg border border-amber/25 bg-amber/5 px-3 py-2 text-sm text-ink-muted">Use this once after the upgrade to secure your existing Chess.com-linked game history with a new password.</p>}
+
           <form onSubmit={handleSubmit} className="space-y-5" noValidate>
+            {claiming ? (
+              <div className="space-y-2">
+                <Label htmlFor="chesscom-username">Existing Chess.com username</Label>
+                <Input id="chesscom-username" autoComplete="username" autoFocus placeholder="Your Chess.com username" value={chesscomUsername} onChange={(event) => setChesscomUsername(event.target.value)} required minLength={3} maxLength={64} />
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <Label htmlFor="username">Account username</Label>
+                <Input id="username" autoComplete="username" autoFocus placeholder="e.g. ysfxjo" value={username} onChange={(event) => setUsername(event.target.value)} aria-describedby="username-help" required minLength={3} maxLength={64} />
+                <p id="username-help" className="text-xs text-ink-muted">Use 3–64 letters, numbers, dots, dashes, or underscores.</p>
+              </div>
+            )}
             <div className="space-y-2">
-              <Label htmlFor="username">Account username</Label>
-              <Input id="username" autoComplete="username" autoFocus placeholder="e.g. ysfxjo" value={username} onChange={(event) => setUsername(event.target.value)} aria-describedby="username-help" required minLength={3} maxLength={64} />
-              <p id="username-help" className="text-xs text-ink-muted">Use 3–64 letters, numbers, dots, dashes, or underscores.</p>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
-              <Input id="password" type="password" autoComplete={creating ? "new-password" : "current-password"} placeholder="At least 12 characters" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={12} maxLength={256} />
+              <Label htmlFor="password">{claiming ? "New password" : "Password"}</Label>
+              <Input id="password" type="password" autoComplete={mode === "sign-in" ? "current-password" : "new-password"} placeholder="At least 12 characters" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={12} maxLength={256} />
               {creating && <p className="text-xs text-ink-muted">Use at least 12 characters. Your Chess.com username is connected after sign-in.</p>}
             </div>
             {creating && (
@@ -66,9 +89,15 @@ export default function Login() {
                 <Input id="registration-code" type="password" autoComplete="off" value={registrationCode} onChange={(event) => setRegistrationCode(event.target.value)} />
               </div>
             )}
+            {claiming && (
+              <div className="space-y-2">
+                <Label htmlFor="claim-code">Legacy account claim code</Label>
+                <Input id="claim-code" type="password" autoComplete="off" value={claimCode} onChange={(event) => setClaimCode(event.target.value)} required minLength={8} maxLength={256} />
+              </div>
+            )}
             {error && <p role="alert" className="rounded-md bg-blunder/10 px-3 py-2 text-sm text-blunder">{error}</p>}
-            <Button type="submit" className="w-full" disabled={submitting || username.trim().length < 3 || password.length < 12}>
-              {submitting ? <LoadingSpinner className="size-4" /> : creating ? "Create secure account" : "Sign in"}
+            <Button type="submit" className="w-full" disabled={submitting || !identityReady || password.length < 12 || (claiming && claimCode.length < 8)}>
+              {submitting ? <LoadingSpinner className="size-4" /> : creating ? "Create secure account" : claiming ? "Claim and secure my data" : "Sign in"}
             </Button>
           </form>
         </section>
