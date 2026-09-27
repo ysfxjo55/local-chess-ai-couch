@@ -80,8 +80,9 @@ export default function Login() {
             )}
             <div className="space-y-2">
               <Label htmlFor="password">{claiming ? "New password" : "Password"}</Label>
-              <Input id="password" type="password" autoComplete={mode === "sign-in" ? "current-password" : "new-password"} placeholder="At least 12 characters" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={12} maxLength={256} />
+              <Input id="password" type="password" autoComplete={mode === "sign-in" ? "current-password" : "new-password"} placeholder={mode === "sign-in" ? "Your password" : "At least 12 characters"} value={password} onChange={(event) => setPassword(event.target.value)} required minLength={mode === "sign-in" ? 1 : 12} maxLength={256} />
               {creating && <p className="text-xs text-ink-muted">Use at least 12 characters. Your Chess.com username is connected after sign-in.</p>}
+              {claiming && <p className="text-xs text-ink-muted">Use at least 12 characters for your new password.</p>}
             </div>
             {creating && (
               <div className="space-y-2">
@@ -93,10 +94,11 @@ export default function Login() {
               <div className="space-y-2">
                 <Label htmlFor="claim-code">Legacy account claim code</Label>
                 <Input id="claim-code" type="password" autoComplete="off" value={claimCode} onChange={(event) => setClaimCode(event.target.value)} required minLength={8} maxLength={256} />
+                <p className="text-xs text-ink-muted">At least 8 characters.</p>
               </div>
             )}
             {error && <p role="alert" className="rounded-md bg-blunder/10 px-3 py-2 text-sm text-blunder">{error}</p>}
-            <Button type="submit" className="w-full" disabled={submitting || !identityReady || password.length < 12 || (claiming && claimCode.length < 8)}>
+            <Button type="submit" className="w-full" disabled={submitting || !identityReady || password.length < (mode === "sign-in" ? 1 : 12) || (claiming && claimCode.length < 8)}>
               {submitting ? <LoadingSpinner className="size-4" /> : creating ? "Create secure account" : claiming ? "Claim and secure my data" : "Sign in"}
             </Button>
           </form>
