@@ -9,11 +9,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useGamesList } from "@/hooks/useGames";
 import { useStatsOverview } from "@/hooks/useStats";
 import { ApiError } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
+import { ChesscomUsernamePrompt } from "@/components/dashboard/ChesscomUsernamePrompt";
+import { DailyPlanCard } from "@/components/dashboard/DailyPlanCard";
 
 const PAGE_SIZE = 10;
 
 export default function Dashboard() {
   const [page, setPage] = useState(0);
+  const { chesscomUsername } = useAuth();
   const games = useGamesList(PAGE_SIZE, page * PAGE_SIZE);
   const stats = useStatsOverview("all");
 
@@ -32,6 +36,10 @@ export default function Dashboard() {
         totalGames={games.data?.total}
         isLoading={stats.isLoading}
       />
+
+      {!chesscomUsername && <ChesscomUsernamePrompt />}
+
+      <DailyPlanCard />
 
       <LessonsCard />
 

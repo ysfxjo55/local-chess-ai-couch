@@ -31,9 +31,17 @@ export function usePuzzleStats() {
 }
 
 export function useGuessPuzzle() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ gameId, ply, body }: { gameId: number; ply: number; body: PuzzleGuessRequest }) =>
       api.guessPuzzle(gameId, ply, body),
+    onSuccess: (result, variables) => {
+      if (!result.recorded) return;
+      queryClient.invalidateQueries({ queryKey: ["puzzle", "stats"] });
+      queryClient.invalidateQueries({ queryKey: ["puzzle", "games"] });
+      queryClient.invalidateQueries({ queryKey: ["game", variables.gameId] });
+      queryClient.invalidateQueries({ queryKey: ["learning"] });
+    },
   });
 }
 
@@ -47,6 +55,7 @@ export function useAttemptPuzzle() {
       // Refreshes puzzle_correct on this game's moves — drives the
       // per-game progress chips (and GameDetail's "fixed" markers).
       queryClient.invalidateQueries({ queryKey: ["game", vars.game_id] });
+      queryClient.invalidateQueries({ queryKey: ["learning"] });
     },
   });
 }

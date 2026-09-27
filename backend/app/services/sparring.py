@@ -2,6 +2,7 @@ import io
 import os
 import random
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 
@@ -12,20 +13,18 @@ from sqlalchemy import func, case
 from sqlalchemy.orm import Session
 
 from ..config import settings
-from ..models import Game, MoveRecord, InsightsRule
+from ..models import AnalysisRun, Game, InsightsRule, MoveRecord
+from .skill_model import record_engine_evidence
 from .stockfish_analysis import (
     white_cp,
     cp_loss_for_player,
     classify_cp_loss,
-    format_game_context,
-    build_analysis_summary,
     analyze_game_enriched,
 )
-from .coach_llm import SYSTEM_PROMPT, generate_analysis, generate_key_takeaway
 
 MIN_GAMES_FOR_TARGET = 3
 SEED_PLY_LIMIT = 6  # up to 3 full moves each side — enough to reach a named branch
-LIVE_EVAL_TIME = 0.1  # matches the post-game Stockfish pass's per-position budget
+LIVE_EVAL_TIME = settings.ENGINE_ANALYSIS_SECONDS
 
 
 def available_levels() -> list[int]:
@@ -146,11 +145,26 @@ class SparringSession:
     sans: list[str] = field(default_factory=list)  # full movetext so far, both sides
     last_ply_count: int = 0  # how many plies the most recent submit_move added (1 or 2) — takeback pops exactly this many
     done: bool = False
+    created_at: float = field(default_factory=time.monotonic)
+    last_activity_at: float = field(default_factory=time.monotonic)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 _sessions: dict[str, SparringSession] = {}
 _sessions_lock = threading.Lock()
+
+
+def _reap_expired_sessions() -> None:
+    """Close orphan engine processes after navigation, refresh, or a crash."""
+    cutoff = time.monotonic() - settings.SPARRING_SESSION_TTL_MINUTES * 60
+    expired: list[SparringSession] = []
+    with _sessions_lock:
+        for session_id, session in list(_sessions.items()):
+            if session.last_activity_at < cutoff:
+                expired.append(session)
+                del _sessions[session_id]
+    for session in expired:
+        _close_engines(session)
 
 
 def _spawn_maia(level: int) -> chess.engine.SimpleEngine:
@@ -165,6 +179,11 @@ def _spawn_stockfish() -> chess.engine.SimpleEngine:
 
 
 def start_session(db: Session, user_id: int, maia_level: int, target_weak_opening: bool) -> SparringSession:
+    _reap_expired_sessions()
+    with _sessions_lock:
+        active = sum(1 for session in _sessions.values() if session.user_id == user_id)
+    if active >= settings.MAX_ACTIVE_SPARRING_SESSIONS:
+        raise ValueError("Finish or abandon the current sparring game before starting another")
     target = find_weak_opening_target(db, user_id) if target_weak_opening else None
 
     if target:
@@ -183,8 +202,17 @@ def start_session(db: Session, user_id: int, maia_level: int, target_weak_openin
         except ValueError:
             break  # a seed move failed to apply — stop replaying, play on from here
 
-    maia_engine = _spawn_maia(maia_level)
-    stockfish_engine = _spawn_stockfish()
+    maia_engine = None
+    try:
+        maia_engine = _spawn_maia(maia_level)
+        stockfish_engine = _spawn_stockfish()
+    except Exception as exc:
+        try:
+            if maia_engine is not None:
+                maia_engine.quit()
+        except Exception:
+            pass
+        raise ValueError("Maia or Stockfish could not be started") from exc
 
     session = SparringSession(
         id=str(uuid.uuid4()),
@@ -210,10 +238,12 @@ def start_session(db: Session, user_id: int, maia_level: int, target_weak_openin
 
 
 def get_session(session_id: str, user_id: int) -> SparringSession | None:
+    _reap_expired_sessions()
     with _sessions_lock:
         session = _sessions.get(session_id)
     if session is None or session.user_id != user_id:
         return None
+    session.last_activity_at = time.monotonic()
     return session
 
 
@@ -238,6 +268,7 @@ def _maybe_play_maia(session: SparringSession) -> str | None:
 def submit_move(
     db: Session, session: SparringSession, from_square: str, to_square: str, promotion: str | None
 ) -> dict:
+    session.last_activity_at = time.monotonic()
     if session.done:
         raise ValueError("Game already finished")
     if _is_maia_turn(session):
@@ -302,6 +333,7 @@ def submit_move(
 
 
 def takeback(session: SparringSession) -> dict:
+    session.last_activity_at = time.monotonic()
     if session.done:
         raise ValueError("Game already finished — nothing to take back")
     if session.last_ply_count == 0:
@@ -396,31 +428,23 @@ def _finalize_game(db: Session, session: SparringSession, result_str: str) -> in
     db.add(db_game)
     db.flush()
 
+    analysis_run = AnalysisRun(
+        game_id=db_game.id,
+        profile_version="stockfish-cpl-v1",
+        engine_name="Stockfish",
+        engine_options='{"mode":"post-game-sparring"}',
+        analysis_seconds=settings.ENGINE_ANALYSIS_SECONDS,
+    )
+    db.add(analysis_run)
+    db.flush()
+    db_game.analysis_version = analysis_run.profile_version
+    models: list[MoveRecord] = []
     for ply, record in enumerate(move_records):
-        db.add(MoveRecord(game_id=db_game.id, ply=ply, **record))
+        model = MoveRecord(game_id=db_game.id, ply=ply, analysis_run_id=analysis_run.id, **record)
+        db.add(model)
+        models.append(model)
+    db.flush()
+    record_engine_evidence(db, session.user_id, db_game, models)
     db.commit()
-
-    if player_outcome == "Loss":
-        try:
-            ctx = {
-                "event": db_game.event, "date": db_game.date, "white": db_game.white,
-                "black": db_game.black, "result": db_game.result, "player": "you",
-                "player_color": db_game.player_color, "opponent": db_game.opponent,
-                "player_outcome": db_game.player_outcome,
-            }
-            game_format = format_game_context(ctx)
-            analysis_summary = build_analysis_summary(ctx, move_records)
-            messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"### Game Details\n{game_format}\n\n### Move Analysis Summary\n{analysis_summary}"},
-            ]
-            db_game.coach_analysis = generate_analysis(messages)
-            db.add(InsightsRule(
-                user_id=session.user_id, game_id=db_game.id,
-                content=generate_key_takeaway(game_format, analysis_summary),
-            ))
-            db.commit()
-        except Exception:
-            db.rollback()
 
     return db_game.id

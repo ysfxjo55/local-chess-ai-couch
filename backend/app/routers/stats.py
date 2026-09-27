@@ -42,7 +42,7 @@ def compute_stats_overview(db: Session, user_id: int, cutoff_date: datetime | No
             func.count(func.distinct(MoveRecord.game_id)).label("game_count"),
         )
         .join(Game, MoveRecord.game_id == Game.id)
-        .filter(MoveRecord.is_player_move == True, MoveRecord.cp_loss.isnot(None))
+        .filter(MoveRecord.is_player_move.is_(True), MoveRecord.cp_loss.isnot(None))
         .filter(user_filter)
         .filter(Game.played_at >= cutoff_date if cutoff_date else True)
         .group_by(func.date(Game.played_at))
@@ -108,7 +108,7 @@ def compute_stats_overview(db: Session, user_id: int, cutoff_date: datetime | No
         )
         .join(Game, MoveRecord.game_id == Game.id)
         .filter(
-            MoveRecord.is_player_move == True,
+            MoveRecord.is_player_move.is_(True),
             user_filter,
             Game.played_at >= cutoff_date if cutoff_date else True,
         )

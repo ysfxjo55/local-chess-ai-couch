@@ -1,9 +1,8 @@
 import chess
 import chess.pgn
 import chess.engine
-import os
 from backend.app.config import settings
-from datetime import datetime
+from datetime import datetime, timezone
 STOCKFISH_PATH = settings.STOCKFISH_PATH
 MATE_CP = 10000
 
@@ -83,7 +82,7 @@ def parse_played_at(headers) -> datetime:
         except ValueError:
             pass
 
-    return datetime.now()
+    return datetime.now(timezone.utc)
 
 
 def format_game_context(ctx: dict) -> str:
@@ -154,7 +153,7 @@ def analyze_game_enriched(game, engine, player_color: str) -> tuple[list[dict], 
     move_records: list[dict] = []
     move_lines: list[str] = []
     move_number = 1
-    eval_before = white_cp(engine.analyse(board, chess.engine.Limit(time=0.1))["score"])
+    eval_before = white_cp(engine.analyse(board, chess.engine.Limit(time=settings.ENGINE_ANALYSIS_SECONDS))["score"])
 
     for move in game.mainline_moves():
         side = "White" if board.turn == chess.WHITE else "Black"
@@ -164,7 +163,7 @@ def analyze_game_enriched(game, engine, player_color: str) -> tuple[list[dict], 
         best_move = None
 
         if is_player:
-            info_before = engine.analyse(board, chess.engine.Limit(time=0.1))
+            info_before = engine.analyse(board, chess.engine.Limit(time=settings.ENGINE_ANALYSIS_SECONDS))
             current_eval_before = white_cp(info_before["score"])
             pv = info_before.get("pv")
             if pv:
@@ -173,7 +172,7 @@ def analyze_game_enriched(game, engine, player_color: str) -> tuple[list[dict], 
         san = board.san(move)
         board.push(move)
 
-        eval_after = white_cp(engine.analyse(board, chess.engine.Limit(time=0.1))["score"])
+        eval_after = white_cp(engine.analyse(board, chess.engine.Limit(time=settings.ENGINE_ANALYSIS_SECONDS))["score"])
 
         if side == "Black":
             label = f"Move {move_number}... ({side})"
@@ -253,6 +252,5 @@ def build_analysis_summary(game_ctx: dict, move_records: list[dict]) -> str:
         lines.extend(["", f"STRONG PLAYER MOVES: {len(excellent)} excellent move(s) with no evaluation loss."])
 
     return "\n".join(lines)
-
 
 

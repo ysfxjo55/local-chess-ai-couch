@@ -95,6 +95,9 @@ export function ChessgroundBoard({
     };
   }
 
+  const lastMoveKey = lastMove?.join(",");
+  const arrowsKey = JSON.stringify(arrows);
+
   // Mount once.
   useEffect(() => {
     if (!el.current) return;
@@ -115,8 +118,8 @@ export function ChessgroundBoard({
     orientation,
     viewOnly,
     turnColor,
-    lastMove?.join(","),
-    JSON.stringify(arrows),
+    lastMoveKey,
+    arrowsKey,
     legalDests,
     freeMode,
   ]);

@@ -1,60 +1,85 @@
+from __future__ import annotations
+
 from datetime import datetime, timedelta, timezone
+import secrets
+
 import bcrypt
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, status
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
+
 from backend.app.config import settings
 from backend.app.db import get_db
 from backend.app.models import User
 
+JWT_ALGORITHM = "HS256"
+
 
 def hash_password(password: str) -> str:
-    pw_bytes = password.encode("utf-8")
-    salt = bcrypt.gensalt()
-    return bcrypt.hashpw(pw_bytes, salt).decode("utf-8")
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
 
 
 def verify_password(password: str, hashed_password: str) -> bool:
-    if not hashed_password:
+    if not hashed_password or hashed_password.startswith("!"):
         return False
     try:
-        pw_bytes = password.encode("utf-8")
-        hash_bytes = hashed_password.encode("utf-8")
-        return bcrypt.checkpw(pw_bytes, hash_bytes)
+        return bcrypt.checkpw(password.encode("utf-8"), hashed_password.encode("utf-8"))
     except (ValueError, TypeError):
         return False
 
 
-def create_access_token(user_id: int, username: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.JWT_EXPIRE_MINUTES)
-    to_encode = {"sub": username, "uid": user_id, "exp": expire}
-    return jwt.encode(to_encode, settings.JWT_SECRET, algorithm="HS256")
+def create_access_token(user_id: int, username: str, token_version: int = 1) -> str:
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": username,
+        "uid": user_id,
+        "ver": token_version,
+        "iat": now,
+        "nbf": now,
+        "exp": now + timedelta(minutes=settings.JWT_EXPIRE_MINUTES),
+        "iss": settings.JWT_ISSUER,
+        "aud": settings.JWT_AUDIENCE,
+        "jti": secrets.token_urlsafe(18),
+    }
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def _unauthorized() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Not authenticated",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 def get_current_user(
-    authorization: str = Header(None),
+    authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ) -> User:
     if not authorization:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    parts = authorization.split(" ")
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    token = parts[1]
+        raise _unauthorized()
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise _unauthorized()
 
     try:
-        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=["HS256"])
-        username: str = payload.get("sub")
-        user_id: int = payload.get("uid")
-        if username is None or user_id is None:
-            raise HTTPException(status_code=401, detail="Not authenticated")
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET,
+            algorithms=[JWT_ALGORITHM],
+            audience=settings.JWT_AUDIENCE,
+            issuer=settings.JWT_ISSUER,
+            options={"require_sub": True, "require_uid": True, "require_exp": True, "require_iat": True, "require_jti": True},
+        )
+        username = payload.get("sub")
+        user_id = payload.get("uid")
+        token_version = payload.get("ver")
+        if not isinstance(username, str) or not isinstance(user_id, int) or not isinstance(token_version, int):
+            raise _unauthorized()
     except JWTError:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise _unauthorized()
 
     user = db.query(User).filter(User.id == user_id, User.username == username).first()
-    if user is None:
-        raise HTTPException(status_code=401, detail="User not found")
-
+    if user is None or user.token_version != token_version:
+        raise _unauthorized()
     return user

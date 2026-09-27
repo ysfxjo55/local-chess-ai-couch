@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type { SyncStatusResponse } from "@/lib/apiTypes";
@@ -6,95 +6,106 @@ import type { SyncStatusResponse } from "@/lib/apiTypes";
 export function useGamesList(limit: number, offset: number) {
   return useQuery({
     queryKey: ["games", { limit, offset }],
-    queryFn: () => api.listGames(limit, offset),
-    placeholderData: (prev) => prev,
+    queryFn: ({ signal }) => api.listGames(limit, offset, signal),
+    placeholderData: (previous) => previous,
   });
 }
 
 export function useGame(id: number) {
   return useQuery({
     queryKey: ["game", id],
-    queryFn: () => api.getGame(id),
+    queryFn: ({ signal }) => api.getGame(id, signal),
     enabled: Number.isFinite(id),
   });
 }
 
-/**
- * Async sync: POST /sync starts a background job, then we poll
- * GET /sync/status until it finishes. The caller sees `syncStatus`
- * (the live poll state) and can trigger a new sync via `mutate()`.
- */
+/** Starts a durable backend sync and polls it sequentially without overlap. */
 export function useSyncGames() {
   const queryClient = useQueryClient();
   const [syncStatus, setSyncStatus] = useState<SyncStatusResponse | null>(null);
   const [isPending, setIsPending] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const [isSuccess, setIsSuccess] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const runRef = useRef(0);
+  const unmountedRef = useRef(false);
+
+  const cancelPolling = useCallback(() => {
+    runRef.current += 1;
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  const invalidateAfterSync = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ["games"] });
+    queryClient.invalidateQueries({ queryKey: ["stats"] });
+    queryClient.invalidateQueries({ queryKey: ["puzzle"] });
+    queryClient.invalidateQueries({ queryKey: ["learning"] });
+  }, [queryClient]);
 
   const reset = useCallback(() => {
+    cancelPolling();
     setSyncStatus(null);
     setIsPending(false);
     setError(null);
     setIsSuccess(false);
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
+  }, [cancelPolling]);
+
+  useEffect(() => () => {
+    unmountedRef.current = true;
+    cancelPolling();
+  }, [cancelPolling]);
 
   const mutate = useCallback(async () => {
     reset();
+    const runId = runRef.current;
     setIsPending(true);
-    setError(null);
-
     try {
-      // Start the background sync
       const initial = await api.syncGames();
+      if (unmountedRef.current || runId !== runRef.current) return;
       setSyncStatus(initial);
 
-      // If it's already done (tiny sync), finish immediately
-      if (initial.status === "done") {
-        setIsPending(false);
-        setIsSuccess(true);
-        queryClient.invalidateQueries({ queryKey: ["games"] });
-        queryClient.invalidateQueries({ queryKey: ["stats"] });
-        return;
-      }
-      if (initial.status === "error") {
-        setIsPending(false);
-        setError(new Error(initial.error ?? "Sync failed"));
+      const finish = (status: SyncStatusResponse) => {
+        if (status.status === "done") {
+          setIsPending(false);
+          setIsSuccess(true);
+          invalidateAfterSync();
+        } else if (status.status === "error") {
+          setIsPending(false);
+          setError(new Error(status.error ?? "Sync failed"));
+        }
+      };
+      if (initial.status === "done" || initial.status === "error") {
+        finish(initial);
         return;
       }
 
-      // Poll for progress
-      pollRef.current = setInterval(async () => {
+      const poll = async () => {
+        if (unmountedRef.current || runId !== runRef.current) return;
         try {
-          const status = await api.syncStatus();
-          setSyncStatus(status);
-
-          if (status.status === "done") {
-            if (pollRef.current) clearInterval(pollRef.current);
-            pollRef.current = null;
-            setIsPending(false);
-            setIsSuccess(true);
-            queryClient.invalidateQueries({ queryKey: ["games"] });
-            queryClient.invalidateQueries({ queryKey: ["stats"] });
-          } else if (status.status === "error") {
-            if (pollRef.current) clearInterval(pollRef.current);
-            pollRef.current = null;
-            setIsPending(false);
-            setError(new Error(status.error ?? "Sync failed"));
+          const latest = await api.syncStatus();
+          if (unmountedRef.current || runId !== runRef.current) return;
+          setSyncStatus(latest);
+          if (latest.status === "done" || latest.status === "error") {
+            finish(latest);
+            return;
           }
         } catch {
-          // Poll request failed — server might be restarting, keep trying
+          // Keep the current durable job status and retry; a short API outage
+          // should not start a second import or discard the visible progress.
         }
-      }, 3000);
-    } catch (err) {
-      setIsPending(false);
-      setError(err instanceof Error ? err : new Error("Could not start sync"));
+        if (!unmountedRef.current && runId === runRef.current) timerRef.current = setTimeout(poll, 3_000);
+      };
+      timerRef.current = setTimeout(poll, 3_000);
+    } catch (reason) {
+      if (!unmountedRef.current && runId === runRef.current) {
+        setIsPending(false);
+        setError(reason instanceof Error ? reason : new Error("Could not start sync"));
+      }
     }
-  }, [queryClient, reset]);
+  }, [invalidateAfterSync, reset]);
 
   return { mutate, reset, syncStatus, isPending, error, isSuccess };
 }

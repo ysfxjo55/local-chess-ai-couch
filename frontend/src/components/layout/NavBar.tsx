@@ -45,7 +45,8 @@ export function NavBar() {
         <div className="flex items-center gap-3">
           <span className="text-xs text-ink-muted">{username}</span>
           <button
-            onClick={logout}
+            onClick={() => void logout()}
+            aria-label="Log out"
             title="Log out"
             className="flex size-8 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-slate-surface hover:text-ink"
           >

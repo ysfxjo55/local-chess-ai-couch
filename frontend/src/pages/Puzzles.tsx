@@ -142,7 +142,7 @@ export default function Puzzles() {
             </div>
             {stats && (
               <p className="text-xs font-medium text-ink-muted">
-                {stats.solved} / {stats.total} reviewed
+                {stats.due} due · {stats.solved} / {stats.total} reviewed
               </p>
             )}
           </div>
@@ -158,7 +158,7 @@ export default function Puzzles() {
         {gameId != null ? (
           <span className="text-xs text-ink-muted">{puzzle.label}</span>
         ) : (
-          <span className="text-xs text-ink-muted">{puzzle.remaining} left in queue</span>
+          <span className="text-xs text-ink-muted">{puzzle.remaining} due now · next interval {puzzle.interval_days || 1} day{(puzzle.interval_days || 1) !== 1 && "s"}</span>
         )}
       </div>
 
@@ -293,13 +293,15 @@ function GamePicker({
     <div className="rounded-lg border border-slate-border bg-slate-surface">
       <button
         onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-controls="puzzle-game-picker"
         className="flex w-full items-center justify-between px-3 py-2 text-sm font-medium text-ink"
       >
         Review one game's mistakes in order
         <ChevronDown className={cn("size-4 text-ink-muted transition-transform", open && "rotate-180")} />
       </button>
       {open && (
-        <div className="space-y-1 border-t border-slate-border p-2">
+        <div id="puzzle-game-picker" className="space-y-1 border-t border-slate-border p-2">
           {gamesQuery.isLoading && <Skeleton className="h-8 w-full" />}
           {!gamesQuery.isLoading && games.length === 0 && (
             <p className="px-1 py-2 text-xs text-ink-muted">No games with unreviewed mistakes.</p>
@@ -348,6 +350,7 @@ function PuzzleBoard({
 }) {
   const attempt = useAttemptPuzzle();
   const guessMutation = useGuessPuzzle();
+  const persistenceError = guessMutation.error ?? attempt.error;
 
   // Single source of truth for this puzzle's position: both derived here,
   // together, from the same `moves` + `puzzle.ply` — see the comment where
@@ -379,6 +382,8 @@ function PuzzleBoard({
   const [lastGuess, setLastGuess] = useState<PuzzleGuessResponse | null>(null);
   const [attempts, setAttempts] = useState(0);
   const [checking, setChecking] = useState(false);
+  const startedAt = useRef<number | null>(null);
+  const attemptKey = useRef<string | null>(null);
   // The position with your attempted move on it, held while it's being
   // checked and briefly after a wrong verdict — so the piece stays where you
   // dropped it instead of snapping back the instant you let go, and only
@@ -398,6 +403,16 @@ function PuzzleBoard({
     const squares = resolveBestMoveArrow(frames, puzzle.ply, move.best_move);
     return squares ? [{ orig: squares.orig, dest: squares.dest, color: "green" }] : [];
   }, [result, move, frames, puzzle.ply]);
+
+  function attemptMetadata() {
+    const now = Date.now();
+    startedAt.current ??= now;
+    attemptKey.current ??= crypto.randomUUID();
+    return {
+      response_seconds: Math.max(0, Math.round((now - startedAt.current) / 1000)),
+      idempotency_key: attemptKey.current,
+    };
+  }
 
   async function handleMove(orig: Key, dest: Key) {
     if (result !== null || explainOpen || checking || pendingFen) return;
@@ -419,7 +434,13 @@ function PuzzleBoard({
       const res = await guessMutation.mutateAsync({
         gameId: puzzle.game_id,
         ply: puzzle.ply,
-        body: { from_square: orig, to_square: dest, promotion },
+        body: {
+          from_square: orig,
+          to_square: dest,
+          promotion,
+          attempts_before_result: attempts,
+          ...attemptMetadata(),
+        },
       });
       setLastGuess(res);
 
@@ -427,7 +448,6 @@ function PuzzleBoard({
         setResultFen(afterFen);
         setPendingFen(null);
         setResult("correct");
-        attempt.mutate({ game_id: puzzle.game_id, ply: puzzle.ply, correct: true });
       } else {
         // Leave the wrong move on the board long enough to read the
         // rating, then let chessground animate it back to the start.
@@ -445,18 +465,29 @@ function PuzzleBoard({
     }
   }
 
-  function handleGiveUp() {
+  async function handleGiveUp() {
     if (result !== null) return;
-    if (move.best_move) {
-      const chess = new Chess(fenBefore);
-      const moveResult = chess.move(move.best_move);
-      if (moveResult) {
-        setGuess({ orig: moveResult.from, dest: moveResult.to });
-        setResultFen(chess.fen());
+    setChecking(true);
+    try {
+      await attempt.mutateAsync({
+        game_id: puzzle.game_id,
+        ply: puzzle.ply,
+        outcome: "gave_up",
+        attempts_before_result: attempts,
+        ...attemptMetadata(),
+      });
+      if (move.best_move) {
+        const chess = new Chess(fenBefore);
+        const moveResult = chess.move(move.best_move);
+        if (moveResult) {
+          setGuess({ orig: moveResult.from, dest: moveResult.to });
+          setResultFen(chess.fen());
+        }
       }
+      setResult("gaveup");
+    } finally {
+      setChecking(false);
     }
-    setResult("gaveup");
-    attempt.mutate({ game_id: puzzle.game_id, ply: puzzle.ply, correct: false });
   }
 
   return (
@@ -547,18 +578,26 @@ function PuzzleBoard({
         )}
       </div>
 
+      {persistenceError && (
+        <p role="alert" className="text-sm text-blunder">
+          {persistenceError instanceof ApiError
+            ? persistenceError.message
+            : "Your result could not be saved. Please try again before moving on."}
+        </p>
+      )}
+
       <div className="flex items-center justify-between gap-2">
         <Button
           variant="outline"
           size="sm"
-          onClick={handleGiveUp}
-          disabled={result !== null}
+          onClick={() => void handleGiveUp()}
+          disabled={result !== null || checking || attempt.isPending}
           className="gap-1.5"
         >
           <Flag className="size-3.5" />
           Give up
         </Button>
-        <Button size="sm" onClick={onNext} disabled={result === null}>
+        <Button size="sm" onClick={onNext} disabled={result === null || checking || attempt.isPending}>
           {nextLabel}
         </Button>
       </div>

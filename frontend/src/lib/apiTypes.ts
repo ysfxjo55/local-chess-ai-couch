@@ -9,6 +9,7 @@ export interface LoginRequest {
 export interface RegisterRequest {
   username: string;
   password: string;
+  registration_code?: string;
 }
 
 export interface TokenResponse {
@@ -19,13 +20,17 @@ export interface TokenResponse {
 export interface MeResponse {
   username: string;
   chesscom_username: string | null;
+  timezone: string;
 }
 
 export interface SetChesscomUsernameRequest {
   chesscom_username: string;
 }
 
-export type QuickStartRequest = SetChesscomUsernameRequest;
+export interface UpdateProfileRequest {
+  chesscom_username?: string | null;
+  timezone?: string | null;
+}
 
 export type PlayerColor = "White" | "Black";
 export type PlayerOutcome = "Win" | "Loss" | "Draw" | "Unknown";
@@ -76,8 +81,7 @@ export interface GameListItem extends GameSyncItem {
   mistakes: number;
   inaccuracies: number;
   player_outcome: PlayerOutcome;
-  /** Proposed API_CONTRACT.md addition — not shipped by the backend yet. */
-  opening?: string;
+  opening: string | null;
 }
 
 export interface PaginatedGamesResponse {
@@ -118,8 +122,7 @@ export interface GameDetail {
   moves: MoveOut[];
   coach_analysis: string | null;
   chat_history: ChatMessageOut[];
-  /** Proposed API_CONTRACT.md addition — not shipped by the backend yet. */
-  opening?: string;
+  opening: string | null;
 }
 
 export interface AnalysisResponse {
@@ -279,21 +282,29 @@ export interface PuzzleOut {
   time_class: TimeClass;
   remaining: number;
   total: number;
+  due_at: string | null;
+  interval_days: number;
 }
 
 export interface PuzzleAttemptRequest {
   game_id: number;
   ply: number;
-  correct: boolean;
+  outcome: "gave_up";
+  attempts_before_result: number;
+  response_seconds?: number;
+  idempotency_key: string;
 }
 
 export interface PuzzleAttemptResponse {
   recorded: boolean;
   remaining: number;
+  due_at: string;
+  interval_days: number;
 }
 
 export interface PuzzleStatsResponse {
   total: number;
+  due: number;
   solved: number;
   correct: number;
 }
@@ -318,6 +329,9 @@ export interface PuzzleGuessRequest {
   from_square: string;
   to_square: string;
   promotion?: string | null;
+  attempts_before_result: number;
+  response_seconds?: number;
+  idempotency_key: string;
 }
 
 export interface PuzzleGuessResponse {
@@ -326,4 +340,48 @@ export interface PuzzleGuessResponse {
   cp_loss: number;
   is_best: boolean;
   solved: boolean;
+  recorded: boolean;
+  remaining: number | null;
+  due_at: string | null;
+}
+
+export interface SkillStateOut {
+  skill_key: string;
+  mastery: number;
+  confidence: number;
+  evidence_count: number;
+  priority: number;
+  last_evidence_at: string | null;
+}
+
+export interface PlayerProfileResponse {
+  generated_at: string;
+  games_analyzed: number;
+  strengths: SkillStateOut[];
+  focus_areas: SkillStateOut[];
+  methodology: string;
+}
+
+export interface DailyPlanItem {
+  id: number;
+  ordinal: number;
+  kind: "review" | "new_puzzle" | "focus" | "sparring";
+  reference_id: string | null;
+  title: string;
+  rationale: string;
+  target_minutes: number;
+  completed_at: string | null;
+}
+
+export interface DailyPlanResponse {
+  id: number;
+  plan_date: string;
+  timezone: string;
+  generated_at: string;
+  items: DailyPlanItem[];
+}
+
+export interface CompletePlanItemResponse {
+  completed: boolean;
+  completed_at: string | null;
 }

@@ -19,7 +19,7 @@ import { ContextCard } from "@/components/coach/ContextCard";
 import { GameAnalysisPanel } from "@/components/coach/GameAnalysisPanel";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { FloatingChatWidget } from "@/components/chat/FloatingChatWidget";
-import { api, ApiError } from "@/lib/api";
+import { ApiError } from "@/lib/api";
 import { forkForPractice, bestMoveSquares } from "@/lib/chessReplay";
 import { cn } from "@/lib/utils";
 import type { BoardArrow } from "@/components/board/ChessgroundBoard";
@@ -74,7 +74,7 @@ function GameDetailLoaded({ game }: { game: NonNullable<ReturnType<typeof useGam
   // that triggered it) — that was the "board is one move behind" bug.
   const divergedChessRef = useRef<Chess | null>(null);
   const [divergedFromPly, setDivergedFromPly] = useState<number | null>(null);
-  const [, forceRender] = useState(0);
+  const [practiceFen, setPracticeFen] = useState<string | null>(null);
   // Which flagged moves' suggested fix you've found — seeded from the
   // server's persisted puzzle_correct (solved via this page or the
   // dedicated Puzzles queue, either counts) and extended locally as you
@@ -106,12 +106,14 @@ function GameDetailLoaded({ game }: { game: NonNullable<ReturnType<typeof useGam
   function goToPly(newPly: number) {
     divergedChessRef.current = null;
     setDivergedFromPly(null);
+    setPracticeFen(null);
     setPly(newPly);
   }
 
   function resetToRealPosition() {
     divergedChessRef.current = null;
     setDivergedFromPly(null);
+    setPracticeFen(null);
   }
 
   function handleBoardMove(orig: Key, dest: Key) {
@@ -130,6 +132,7 @@ function GameDetailLoaded({ game }: { game: NonNullable<ReturnType<typeof useGam
     chess.remove(orig as Parameters<Chess["remove"]>[0]);
     chess.remove(dest as Parameters<Chess["remove"]>[0]);
     chess.put(piece, dest as Parameters<Chess["put"]>[1]);
+    setPracticeFen(chess.fen());
 
     if (divergedFromPly === null) {
       setDivergedFromPly(ply); // triggers the re-render that shows the new (diverged) position
@@ -142,17 +145,15 @@ function GameDetailLoaded({ game }: { game: NonNullable<ReturnType<typeof useGam
         const squares = bestMoveSquares(baseFen, bestMove);
         if (squares && squares.from === orig && squares.to === dest) {
           setFixedPlies((prev) => new Set(prev).add(ply));
-          // Fire-and-forget: keeps this in sync with the dedicated Puzzles
-          // queue, which reads the same puzzle_correct flag server-side.
-          api.attemptPuzzle({ game_id: game.id, ply, correct: true }).catch(() => {});
+          // This board is a free-exploration aid. Only the dedicated puzzle
+          // endpoint records completion, because it verifies the move
+          // against engine evidence rather than trusting a client-side flag.
         }
       }
-    } else {
-      forceRender((n) => n + 1); // already diverged — divergedFromPly won't change, force the re-render explicitly
     }
   }
 
-  const boardFen = divergedChessRef.current ? divergedChessRef.current.fen() : fen;
+  const boardFen = practiceFen ?? fen;
   const boardTurnColor = boardFen.split(" ")[1] === "w" ? "white" : "black";
 
   return (

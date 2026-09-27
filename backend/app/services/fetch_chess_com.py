@@ -1,50 +1,58 @@
-import re
+from __future__ import annotations
+
+from urllib.parse import quote
+
 import requests
-from urllib.parse import quote 
+
+from ..config import settings
 
 
 class ChessComUnavailable(Exception):
     pass
 
 
+HEADERS = {
+    "User-Agent": "ChessCoach/1.0 (+https://github.com/ysfxjo55/local-chess-ai-couch)",
+    "Accept": "application/json",
+}
+
+
+def _get(session: requests.Session, url: str) -> dict:
+    try:
+        response = session.get(url, headers=HEADERS, timeout=settings.CHESSCOM_TIMEOUT_SECONDS)
+        response.raise_for_status()
+        body = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise ChessComUnavailable("Chess.com is temporarily unavailable. Please try syncing again later.") from exc
+    if not isinstance(body, dict):
+        raise ChessComUnavailable("Chess.com returned an unexpected response")
+    return body
+
+
 def fetch_recent_games(username: str, months_back: int | None = 1) -> list[dict]:
-    """Fetch games from the player's monthly archives. `months_back=1` (the
-    default) is the fast incremental path for a repeat sync. Pass `None` to
-    fetch every archived month — used for a user's very first sync, so they
-    get their whole history instead of just whatever was played this month.
-
-    Each item is `{"pgn": str, "time_class": str | None}` — `time_class` is
-    Chess.com's own "bullet"/"blitz"/"rapid"/"daily" label, read straight
-    from their API rather than inferred from the PGN's TimeControl header,
-    since Chess.com's exact minute cutoffs for each label aren't public.
-    """
-    headers = {
-        "User-Agent": "ChessAI-CoachAgent/1.0 (https://github.com/ysfxjo55/local-chess-ai-couch)"
-    }
-    encoded_username = quote(username)
+    """Fetch a bounded public-game import with validated upstream responses."""
+    encoded_username = quote(username.strip(), safe="")
     archive_url = f"https://api.chess.com/pub/player/{encoded_username}/games/archives"
-
-    response = requests.get(archive_url, headers=headers, timeout=10)
-    if response.status_code != 200:
-        raise ChessComUnavailable(f"Could not fetch archives for {username}: HTTP {response.status_code}")
-
-    archives = response.json().get("archives", [])
-    if not archives:
-        raise ChessComUnavailable(f"No game archives found for {username}")
-
-    recent_archive_urls = archives if months_back is None else archives[-months_back:]
-    all_games: list[dict] = []
-    for month_url in recent_archive_urls:
-        games_response = requests.get(month_url, headers=headers, timeout=10)
-        if games_response.status_code != 200:
-            raise ChessComUnavailable(f"Could not fetch games from {month_url}: HTTP {games_response.status_code}")
-
-        games = games_response.json().get("games", [])
-        for game in games:
-            pgn = game.get("pgn")
-            if pgn:
-                all_games.append({"pgn": pgn, "time_class": game.get("time_class")})
-
+    with requests.Session() as session:
+        archive_body = _get(session, archive_url)
+        archives = archive_body.get("archives", [])
+        if not isinstance(archives, list) or not archives:
+            raise ChessComUnavailable("No public Chess.com game archives were found for this username")
+        selected = archives if months_back is None else archives[-months_back:]
+        all_games: list[dict] = []
+        for month_url in selected:
+            if not isinstance(month_url, str) or not month_url.startswith("https://api.chess.com/"):
+                raise ChessComUnavailable("Chess.com returned an unsafe archive link")
+            month_body = _get(session, month_url)
+            games = month_body.get("games", [])
+            if not isinstance(games, list):
+                raise ChessComUnavailable("Chess.com returned an unexpected games archive")
+            for game in games:
+                if not isinstance(game, dict):
+                    continue
+                pgn = game.get("pgn")
+                if isinstance(pgn, str) and pgn:
+                    all_games.append({"pgn": pgn, "time_class": game.get("time_class")})
+                    if len(all_games) >= settings.SYNC_MAX_GAMES:
+                        return all_games
     return all_games
-
-

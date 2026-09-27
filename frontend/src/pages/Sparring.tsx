@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Chess } from "chess.js";
@@ -238,6 +238,22 @@ function SparringBoard({
   const [gameId, setGameId] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const finishedRef = useRef(session.done);
+
+  useEffect(() => {
+    finishedRef.current = done;
+  }, [done]);
+
+  useEffect(() => {
+    const abandon = () => {
+      if (!finishedRef.current) void api.sparringAbandon(session.session_id).catch(() => {});
+    };
+    window.addEventListener("pagehide", abandon);
+    return () => {
+      window.removeEventListener("pagehide", abandon);
+      abandon();
+    };
+  }, [session.session_id]);
 
   const orientation = session.player_color.toLowerCase() as "white" | "black";
   const boardTurnColor = fen.split(" ")[1] === "w" ? "white" : "black";

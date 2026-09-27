@@ -12,7 +12,8 @@ from ..schemas import (
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from datetime import datetime
-from ..db import get_db
+from ..config import settings
+from ..db import SessionLocal, get_db
 from ..auth import get_current_user
 from ..models import Game, MoveRecord, ChatMessage, Conversation, InsightsRule, User
 from ..schemas import MoveOut
@@ -23,6 +24,7 @@ from ..services.coach_llm import (
     GET_GAME_DETAIL_TOOL,
     stream_coach_response_with_tools,
 )
+from ..services.rate_limits import rate_limit
 from .stats import compute_stats_overview
 from fastapi.responses import StreamingResponse
 import json
@@ -167,7 +169,7 @@ def compute_deep_analysis(db: Session, user_id: int, limit: int = DEEP_ANALYSIS_
     games_by_id = {g.id: g for g in games}
     moves = (
         db.query(MoveRecord)
-        .filter(MoveRecord.game_id.in_(games_by_id.keys()), MoveRecord.is_player_move == True)
+        .filter(MoveRecord.game_id.in_(games_by_id.keys()), MoveRecord.is_player_move.is_(True))
         .all()
     )
 
@@ -362,10 +364,13 @@ def delete_rule(rule_id: int, db: Session = Depends(get_db), current_user: User 
     return {"deleted": True}
 
 
-@router.post("/chat")
+@router.post("/chat", dependencies=[Depends(rate_limit("coach", 12, 60 * 60))])
 def coach_chat(payload: CoachChatRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
 
     if payload.game_id is not None:
+        game = db.query(Game).filter(Game.id == payload.game_id, Game.user_id == current_user.id).first()
+        if not game:
+            raise HTTPException(status_code=404, detail="Game not found")
         chat = ChatMessage(
             user_id=current_user.id,
             game_id=payload.game_id,
@@ -374,10 +379,6 @@ def coach_chat(payload: CoachChatRequest, db: Session = Depends(get_db), current
         )
         db.add(chat)
         db.commit()
-
-        game = db.query(Game).filter(Game.id == payload.game_id, Game.user_id == current_user.id).first()
-        if not game:
-            raise HTTPException(status_code=404, detail="Game not found")
         ctx = {
             "event": game.event,
             "date": game.date,
@@ -436,10 +437,10 @@ def coach_chat(payload: CoachChatRequest, db: Session = Depends(get_db), current
         pattern_summary = build_pattern_summary(overview)
         learned_rules_section = build_learned_rules_section(db, current_user.id)
 
-        chat_history = db.query(ChatMessage).filter(
+        chat_history = list(reversed(db.query(ChatMessage).filter(
             ChatMessage.game_id == payload.game_id,
             ChatMessage.user_id == current_user.id,
-        ).order_by(ChatMessage.created_at).all()
+        ).order_by(ChatMessage.created_at.desc()).limit(settings.COACH_HISTORY_LIMIT).all()))
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user",
@@ -488,14 +489,17 @@ def coach_chat(payload: CoachChatRequest, db: Session = Depends(get_db), current
                         continue  # model referenced a move outside this game — skip silently
                     yield f"data: {json.dumps({'showPosition': {'ply': ply, 'caption': args.get('caption')}})}\n\n"
 
-            chat_message = ChatMessage(
-                user_id=current_user.id,
-                game_id=payload.game_id,
-                role="assistant",
-                content=content,
-            )
-            db.add(chat_message)
-            db.commit()
+            stream_db = SessionLocal()
+            try:
+                stream_db.add(ChatMessage(
+                    user_id=current_user.id,
+                    game_id=payload.game_id,
+                    role="assistant",
+                    content=content,
+                ))
+                stream_db.commit()
+            finally:
+                stream_db.close()
 
             yield f"data: {json.dumps({'done': True})}\n\n"
         return StreamingResponse(event_stream(), media_type="text/event-stream")
@@ -528,9 +532,9 @@ def coach_chat(payload: CoachChatRequest, db: Session = Depends(get_db), current
         conversation.updated_at = datetime.now()
         db.commit()
 
-        chat_history = db.query(ChatMessage).filter(
+        chat_history = list(reversed(db.query(ChatMessage).filter(
             ChatMessage.conversation_id == conversation.id,
-        ).order_by(ChatMessage.created_at).all()
+        ).order_by(ChatMessage.created_at.desc()).limit(settings.COACH_HISTORY_LIMIT).all()))
 
         all_games = db.query(Game).filter(Game.user_id == current_user.id).all()
         wins = 0
@@ -567,7 +571,7 @@ def coach_chat(payload: CoachChatRequest, db: Session = Depends(get_db), current
             .join(Game, MoveRecord.game_id == Game.id)
             .filter(
                 Game.user_id == current_user.id,
-                MoveRecord.is_player_move == True,
+                MoveRecord.is_player_move.is_(True),
                 MoveRecord.classification.in_(["Blunder", "Mistake"]),
             )
             .order_by(MoveRecord.cp_loss.desc())
@@ -599,6 +603,7 @@ def coach_chat(payload: CoachChatRequest, db: Session = Depends(get_db), current
         conversation_id = conversation.id
 
         def event_stream():
+            stream_db = SessionLocal()
             if is_new_conversation:
                 yield f"data: {json.dumps({'conversationId': conversation_id})}\n\n"
 
@@ -634,7 +639,7 @@ def coach_chat(payload: CoachChatRequest, db: Session = Depends(get_db), current
                 if name != "get_game_detail":
                     return "Unknown tool.", None
                 opponent = (args.get("opponent") or "").strip()
-                query = db.query(Game).filter(Game.user_id == current_user.id)
+                query = stream_db.query(Game).filter(Game.user_id == current_user.id)
                 if opponent:
                     query = query.filter(Game.opponent.ilike(f"%{opponent}%"))
                 game = query.order_by(Game.played_at.desc()).first()
@@ -644,25 +649,26 @@ def coach_chat(payload: CoachChatRequest, db: Session = Depends(get_db), current
                         else "No games synced yet.",
                         None,
                     )
-                return build_full_game_detail_text(db, game, current_user.username), None
+                return build_full_game_detail_text(stream_db, game, current_user.username), None
 
-            content = ""
-            for event in stream_coach_response_with_tools(
-                final_messages, tools=[GET_GAME_DETAIL_TOOL], tool_handler=handle_global_tool_call
-            ):
-                if event["type"] == "text":
-                    content += event["content"]
-                    yield f"data: {json.dumps({'content': event['content']})}\n\n"
+            try:
+                content = ""
+                for event in stream_coach_response_with_tools(
+                    final_messages, tools=[GET_GAME_DETAIL_TOOL], tool_handler=handle_global_tool_call
+                ):
+                    if event["type"] == "text":
+                        content += event["content"]
+                        yield f"data: {json.dumps({'content': event['content']})}\n\n"
 
-            chat_message = ChatMessage(
-                user_id=current_user.id,
-                conversation_id=conversation_id,
-                role="assistant",
-                content=content,
-            )
-            db.add(chat_message)
-            db.commit()
-
-            yield f"data: {json.dumps({'done': True})}\n\n"
+                stream_db.add(ChatMessage(
+                    user_id=current_user.id,
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=content,
+                ))
+                stream_db.commit()
+                yield f"data: {json.dumps({'done': True})}\n\n"
+            finally:
+                stream_db.close()
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")

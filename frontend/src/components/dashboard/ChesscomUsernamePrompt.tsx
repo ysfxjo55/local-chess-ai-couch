@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Puzzle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { ApiError, api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
@@ -42,7 +43,9 @@ export function ChesscomUsernamePrompt() {
             own games and analysis — this only needs to be done once.
           </p>
           <form onSubmit={handleSubmit} className="mt-3 flex flex-col gap-2 sm:flex-row">
+            <Label htmlFor="dashboard-chesscom-username" className="sr-only">Chess.com username</Label>
             <Input
+              id="dashboard-chesscom-username"
               autoFocus
               placeholder="e.g. ysfxjo2"
               value={value}
@@ -55,7 +58,7 @@ export function ChesscomUsernamePrompt() {
               {submitting ? "Saving…" : "Save"}
             </Button>
           </form>
-          {error && <p className="mt-2 text-sm text-blunder">{error}</p>}
+          {error && <p role="alert" className="mt-2 text-sm text-blunder">{error}</p>}
         </div>
       </div>
     </div>

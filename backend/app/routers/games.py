@@ -1,233 +1,288 @@
+from __future__ import annotations
+
 import io
+import json
 import threading
+import uuid
+from datetime import datetime
+
+import chess.engine
 import chess.pgn
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import case, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from ..db import get_db, SessionLocal
+
 from ..auth import get_current_user
 from ..config import settings
-from ..models import Game, MoveRecord, ChatMessage, InsightsRule, User
-from ..schemas import GameDetail, MoveOut, ChatMessageOut, SyncStatusResponse, SyncBlunderHighlight, GameSyncItem, PaginatedGamesResponse, GameListItem, AnalysisResponse
-from ..services.fetch_chess_com import fetch_recent_games, ChessComUnavailable
-import chess.engine
-from ..services.stockfish_analysis import build_game_context, analyze_game_enriched, parse_played_at, build_analysis_summary, format_game_context
-from sqlalchemy import func
+from ..db import SessionLocal, get_db
+from ..models import AnalysisRun, Game, InsightsRule, MoveRecord, SyncJob, User, utcnow
+from ..schemas import (
+    AnalysisResponse,
+    ChatMessageOut,
+    GameDetail,
+    GameListItem,
+    GameSyncItem,
+    MoveOut,
+    PaginatedGamesResponse,
+    SyncBlunderHighlight,
+    SyncStatusResponse,
+)
 from ..services.coach_llm import SYSTEM_PROMPT, generate_analysis, generate_key_takeaway
+from ..services.fetch_chess_com import ChessComUnavailable, fetch_recent_games
+from ..services.rate_limits import rate_limit
+from ..services.skill_model import record_engine_evidence
+from ..services.stockfish_analysis import (
+    analyze_game_enriched,
+    build_analysis_summary,
+    build_game_context,
+    format_game_context,
+    parse_played_at,
+)
 
 router = APIRouter(prefix="/api/games", tags=["games"])
-
-# Sync (especially a brand-new account's first sync, which pulls its whole
-# Chess.com history) can take many minutes — Stockfish analyzes every move
-# of every new game. That's far longer than Cloudflare's tunnel/edge will
-# hold a single HTTP request open for, so sync runs in a background thread:
-# POST /sync starts it and returns immediately, GET /sync/status is polled
-# for progress. `_syncing_user_ids` prevents a double-tap (or a client
-# retrying after it gave up waiting) from starting a second overlapping job
-# for the same account, which used to be able to throw "database is locked".
-_syncing_user_ids: set[int] = set()
-_syncing_lock = threading.Lock()
-_sync_jobs: dict[int, dict] = {}
-_sync_jobs_lock = threading.Lock()
+_sync_create_lock = threading.Lock()
 
 
-def _default_job() -> dict:
-    return {
-        "status": "running", "processed": 0, "total": 0, "new_games": 0, "games": [], "error": None,
-        "blunders_found": 0, "worst_blunder": None,
-    }
+def _json_default(value):  # noqa: ANN001
+    if isinstance(value, datetime):
+        return value.isoformat()
+    raise TypeError(f"Unsupported type: {type(value)!r}")
 
 
-def _set_job(user_id: int, **fields) -> None:
-    with _sync_jobs_lock:
-        job = _sync_jobs.setdefault(user_id, _default_job())
-        job.update(fields)
+def _job_summary(job: SyncJob) -> dict:
+    try:
+        summary = json.loads(job.summary_json or "{}")
+        return summary if isinstance(summary, dict) else {}
+    except json.JSONDecodeError:
+        return {}
 
 
-@router.post("/sync", response_model=SyncStatusResponse)
-def sync_games(current_user: User = Depends(get_current_user)):
+def _status(job: SyncJob) -> SyncStatusResponse:
+    summary = _job_summary(job)
+    games = []
+    for item in summary.get("games", []):
+        try:
+            games.append(GameSyncItem(**item))
+        except Exception:
+            continue
+    worst = None
+    if isinstance(summary.get("worst_blunder"), dict):
+        try:
+            worst = SyncBlunderHighlight(**summary["worst_blunder"])
+        except Exception:
+            pass
+    return SyncStatusResponse(
+        job_id=job.id,
+        status=job.status,
+        processed=job.processed,
+        total=job.total,
+        new_games=job.new_games,
+        games=games,
+        error=job.error,
+        blunders_found=int(summary.get("blunders_found", 0)),
+        worst_blunder=worst,
+    )
+
+
+def _update_job(db: Session, job: SyncJob, **values) -> None:
+    for key, value in values.items():
+        setattr(job, key, value)
+    job.heartbeat_at = utcnow()
+    db.commit()
+
+
+def recover_interrupted_sync_jobs() -> None:
+    """Mark process-local runner work as interrupted after a restart."""
+    db = SessionLocal()
+    try:
+        jobs = db.query(SyncJob).filter(SyncJob.status.in_(("queued", "running"))).all()
+        for job in jobs:
+            job.status = "error"
+            job.error = "Sync was interrupted by a server restart. Start a new sync to continue safely."
+            job.finished_at = utcnow()
+        if jobs:
+            db.commit()
+    finally:
+        db.close()
+
+
+@router.post("/sync", response_model=SyncStatusResponse, dependencies=[Depends(rate_limit("sync", 4, 60 * 60))])
+def sync_games(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not current_user.chesscom_username:
         raise HTTPException(status_code=400, detail="no_chesscom_username")
+    if not settings.STOCKFISH_PATH:
+        raise HTTPException(status_code=503, detail="Stockfish is not configured")
 
-    with _syncing_lock:
-        if current_user.id in _syncing_user_ids:
-            return SyncStatusResponse(**_sync_jobs.get(current_user.id, {"status": "running"}))
-        _syncing_user_ids.add(current_user.id)
+    with _sync_create_lock:
+        running = (
+            db.query(SyncJob)
+            .filter(SyncJob.user_id == current_user.id, SyncJob.status.in_(("queued", "running")))
+            .order_by(SyncJob.created_at.desc())
+            .first()
+        )
+        if running:
+            return _status(running)
+        job = SyncJob(id=str(uuid.uuid4()), user_id=current_user.id, status="queued")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+        chesscom_username = current_user.chesscom_username
 
-    _sync_jobs[current_user.id] = _default_job()
-    threading.Thread(
-        target=_run_sync_job,
-        args=(current_user.id, current_user.chesscom_username),
-        daemon=True,
-    ).start()
-    return SyncStatusResponse(**_sync_jobs[current_user.id])
+    threading.Thread(target=_run_sync_job, args=(job_id, current_user.id, chesscom_username), daemon=True).start()
+    return _status(job)
 
 
 @router.get("/sync/status", response_model=SyncStatusResponse)
-def sync_status(current_user: User = Depends(get_current_user)):
-    job = _sync_jobs.get(current_user.id)
-    if job is None:
-        return SyncStatusResponse(status="idle")
-    return SyncStatusResponse(**job)
+def sync_status(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    job = (
+        db.query(SyncJob)
+        .filter(SyncJob.user_id == current_user.id)
+        .order_by(SyncJob.created_at.desc())
+        .first()
+    )
+    return _status(job) if job else SyncStatusResponse(status="idle")
 
 
-def _run_sync_job(user_id: int, chesscom_username: str) -> None:
-    """Runs on a background thread — needs its own DB session, since the
-    request-scoped one from `get_db` closes as soon as the endpoint above
-    returns (which happens immediately, before this function starts)."""
+def _run_sync_job(job_id: str, user_id: int, chesscom_username: str) -> None:
     db = SessionLocal()
     try:
-        _do_sync(db, user_id, chesscom_username)
-    except Exception as e:
-        _set_job(user_id, status="error", error=str(e))
+        job = db.get(SyncJob, job_id)
+        if not job:
+            return
+        job.status = "running"
+        job.started_at = utcnow()
+        _update_job(db, job)
+        _do_sync(db, job, user_id, chesscom_username)
+    except Exception:
+        db.rollback()
+        job = db.get(SyncJob, job_id)
+        if job:
+            job.status = "error"
+            job.error = "Sync could not be completed. No partially imported game was discarded; try again later."
+            job.finished_at = utcnow()
+            db.commit()
     finally:
         db.close()
-        with _syncing_lock:
-            _syncing_user_ids.discard(user_id)
 
 
-def _do_sync(db: Session, user_id: int, chesscom_username: str) -> None:
-    # First sync ever for this account: pull the player's entire Chess.com
-    # history, not just the current month — otherwise a brand-new account
-    # only ever sees whatever was played so far this calendar month.
-    is_first_sync = db.query(Game.id).filter(Game.user_id == user_id).first() is None
-    months_back = None if is_first_sync else 1
-
+def _do_sync(db: Session, job: SyncJob, user_id: int, chesscom_username: str) -> None:
+    first_sync = db.query(Game.id).filter(Game.user_id == user_id).first() is None
     try:
-        fetched_games = fetch_recent_games(chesscom_username, months_back=months_back)
-    except ChessComUnavailable as e:
-        _set_job(user_id, status="error", error=str(e))
+        fetched_games = fetch_recent_games(chesscom_username, months_back=None if first_sync else 1)
+    except ChessComUnavailable as exc:
+        job.status = "error"
+        job.error = str(exc)
+        job.finished_at = utcnow()
+        db.commit()
         return
 
-    _set_job(user_id, total=len(fetched_games))
-
-    new_games_out: list[dict] = []
+    job.total = len(fetched_games)
+    db.commit()
+    created_games: list[dict] = []
     blunders_found = 0
-    worst_blunder: SyncBlunderHighlight | None = None
+    worst_blunder: dict | None = None
+    try:
+        engine_context = chess.engine.SimpleEngine.popen_uci(settings.STOCKFISH_PATH)
+    except (FileNotFoundError, chess.engine.EngineError):
+        job.status = "error"
+        job.error = "Stockfish is unavailable; verify STOCKFISH_PATH before retrying."
+        job.finished_at = utcnow()
+        db.commit()
+        return
 
-    with chess.engine.SimpleEngine.popen_uci(settings.STOCKFISH_PATH) as engine:
-        for i, fetched in enumerate(fetched_games):
-            pgn_text = fetched["pgn"]
-            time_class = fetched["time_class"]
-            parsed = chess.pgn.read_game(io.StringIO(pgn_text))
-            if parsed is not None:
+    try:
+        with engine_context as engine:
+            for index, fetched in enumerate(fetched_games, start=1):
+                parsed = chess.pgn.read_game(io.StringIO(fetched["pgn"]))
+                if parsed is None:
+                    _update_job(db, job, processed=index)
+                    continue
                 chess_com_url = parsed.headers.get("Link")
-                # Scoped per-user: two different app accounts can each hold
-                # their own copy of the same Chess.com game (see models.py).
-                existing = (
-                    db.query(Game)
-                    .filter(Game.chess_com_url == chess_com_url, Game.user_id == user_id)
-                    .first()
-                    if chess_com_url
-                    else None
+                if not chess_com_url:
+                    _update_job(db, job, processed=index)
+                    continue
+                existing = db.query(Game).filter(Game.user_id == user_id, Game.chess_com_url == chess_com_url).first()
+                if existing:
+                    if existing.time_class is None and fetched.get("time_class"):
+                        existing.time_class = fetched["time_class"]
+                    _update_job(db, job, processed=index)
+                    continue
+
+                context = build_game_context(parsed, chesscom_username)
+                if context["player_color"] == "Unknown":
+                    _update_job(db, job, processed=index)
+                    continue
+                move_records, _ = analyze_game_enriched(parsed, engine, context["player_color"])
+                game = Game(
+                    user_id=user_id,
+                    chess_com_url=chess_com_url,
+                    pgn=fetched["pgn"],
+                    event=context["event"],
+                    date=context["date"],
+                    white=context["white"],
+                    black=context["black"],
+                    result=context["result"],
+                    player_color=context["player_color"],
+                    opponent=context["opponent"],
+                    player_outcome=context["player_outcome"],
+                    opening=context["opening"],
+                    time_class=fetched.get("time_class"),
+                    source="chesscom",
+                    played_at=parse_played_at(parsed.headers),
                 )
-                if existing is not None:
-                    # Self-heals rows synced before time_class existed —
-                    # only the current month ever passes through here on a
-                    # normal incremental sync, so older rows still need the
-                    # one-off backfill script for months outside that window.
-                    if existing.time_class is None and time_class is not None:
-                        existing.time_class = time_class
-                        db.commit()
-                elif chess_com_url:
-                    ctx = build_game_context(parsed, chesscom_username)
-                    played_at = parse_played_at(parsed.headers)
-                    move_records, _ = analyze_game_enriched(parsed, engine, ctx["player_color"])
+                db.add(game)
+                try:
+                    db.flush()
+                except IntegrityError:
+                    db.rollback()
+                    job = db.get(SyncJob, job.id)
+                    _update_job(db, job, processed=index)
+                    continue
 
-                    game = Game(
-                        user_id=user_id,
-                        chess_com_url=chess_com_url,
-                        pgn=pgn_text,
-                        event=ctx["event"],
-                        date=ctx["date"],
-                        white=ctx["white"],
-                        black=ctx["black"],
-                        result=ctx["result"],
-                        player_color=ctx["player_color"],
-                        opponent=ctx["opponent"],
-                        player_outcome=ctx["player_outcome"],
-                        opening=ctx["opening"],
-                        time_class=time_class,
-                        played_at=played_at,
-                    )
-                    db.add(game)
-                    db.flush()  # assigns game.id before we attach MoveRecords
+                analysis_run = AnalysisRun(
+                    game_id=game.id,
+                    profile_version="stockfish-cpl-v1",
+                    engine_name="Stockfish",
+                    engine_options=json.dumps({"path": settings.STOCKFISH_PATH}),
+                    analysis_seconds=settings.ENGINE_ANALYSIS_SECONDS,
+                )
+                db.add(analysis_run)
+                db.flush()
+                game.analysis_version = analysis_run.profile_version
+                records: list[MoveRecord] = []
+                for ply, record in enumerate(move_records):
+                    model = MoveRecord(game_id=game.id, ply=ply, analysis_run_id=analysis_run.id, **record)
+                    db.add(model)
+                    records.append(model)
+                db.flush()
+                record_engine_evidence(db, user_id, game, records)
+                game_blunders = [record for record in move_records if record["is_player_move"] and record["classification"] == "Blunder"]
+                blunders_found += len(game_blunders)
+                if game_blunders:
+                    worst = max(game_blunders, key=lambda record: record["cp_loss"] or 0)
+                    candidate = {"game_id": game.id, "opponent": game.opponent or "Unknown", "label": worst["label"], "san": worst["san"], "cp_loss": worst["cp_loss"] or 0}
+                    if worst_blunder is None or candidate["cp_loss"] > worst_blunder["cp_loss"]:
+                        worst_blunder = candidate
+                created_games.append(
+                    {"id": game.id, "opponent": game.opponent, "result": game.result, "player_color": game.player_color, "played_at": game.played_at, "time_class": game.time_class}
+                )
+                summary = {"games": created_games[-20:], "blunders_found": blunders_found, "worst_blunder": worst_blunder}
+                _update_job(
+                    db,
+                    job,
+                    processed=index,
+                    new_games=len(created_games),
+                    summary_json=json.dumps(summary, default=_json_default),
+                )
+    finally:
+        pass
 
-                    game_blunders = [
-                        r for r in move_records
-                        if r["is_player_move"] and r["classification"] == "Blunder"
-                    ]
-                    if game_blunders:
-                        blunders_found += len(game_blunders)
-                        worst_in_game = max(game_blunders, key=lambda r: r["cp_loss"])
-                        if worst_blunder is None or worst_in_game["cp_loss"] > worst_blunder.cp_loss:
-                            worst_blunder = SyncBlunderHighlight(
-                                game_id=game.id,
-                                opponent=ctx["opponent"],
-                                label=worst_in_game["label"],
-                                san=worst_in_game["san"],
-                                cp_loss=worst_in_game["cp_loss"],
-                            )
-
-                    for ply, record in enumerate(move_records):
-                        db.add(MoveRecord(game_id=game.id, ply=ply, **record))
-
-                    # Commit per-game rather than once at the end: each
-                    # transaction stays short (no more multi-minute lock
-                    # window), and a crash/restart partway through a huge
-                    # first sync doesn't throw away everything already done.
-                    db.commit()
-
-                    # Losses only, and best-effort: a lost game's "what went
-                    # wrong" writeup and takeaway rule are worth having
-                    # ready the moment you open the game, not gated behind a
-                    # manual click — but an LLM hiccup here must never take
-                    # the sync job down with it (a win/draw just doesn't get
-                    # this at all; those aren't cost-effective to
-                    # auto-generate for every synced game).
-                    if ctx["player_outcome"] == "Loss":
-                        try:
-                            game_format = format_game_context(ctx)
-                            analysis_summary = build_analysis_summary(ctx, move_records)
-                            messages = [
-                                {"role": "system", "content": SYSTEM_PROMPT},
-                                {
-                                    "role": "user",
-                                    "content": f"### Game Details\n{game_format}\n\n### Move Analysis Summary\n{analysis_summary}",
-                                },
-                            ]
-                            game.coach_analysis = generate_analysis(messages)
-                            db.add(
-                                InsightsRule(
-                                    user_id=user_id,
-                                    game_id=game.id,
-                                    content=generate_key_takeaway(game_format, analysis_summary),
-                                )
-                            )
-                            db.commit()
-                        except Exception:
-                            db.rollback()
-
-                    new_games_out.append(
-                        {
-                            "id": game.id,
-                            "opponent": game.opponent,
-                            "result": game.result,
-                            "player_color": game.player_color,
-                            "played_at": game.played_at,
-                            "time_class": game.time_class,
-                        }
-                    )
-
-            _set_job(
-                user_id,
-                processed=i + 1,
-                new_games=len(new_games_out),
-                games=list(new_games_out),
-                blunders_found=blunders_found,
-                worst_blunder=worst_blunder,
-            )
-
-    _set_job(user_id, status="done")
+    job.status = "done"
+    job.finished_at = utcnow()
+    job.summary_json = json.dumps({"games": created_games[-20:], "blunders_found": blunders_found, "worst_blunder": worst_blunder}, default=_json_default)
+    db.commit()
 
 
 @router.get("/{game_id}", response_model=GameDetail)
@@ -235,10 +290,15 @@ def get_game(game_id: int, db: Session = Depends(get_db), current_user: User = D
     game = db.query(Game).filter(Game.id == game_id, Game.user_id == current_user.id).first()
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
-
     moves = db.query(MoveRecord).filter(MoveRecord.game_id == game_id).order_by(MoveRecord.ply).all()
-    chat_history = db.query(ChatMessage).filter(ChatMessage.game_id == game_id, ChatMessage.user_id == current_user.id).order_by(ChatMessage.created_at).all()
-
+    from ..models import ChatMessage
+    chat_history = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.game_id == game_id, ChatMessage.user_id == current_user.id)
+        .order_by(ChatMessage.created_at)
+        .limit(settings.COACH_HISTORY_LIMIT)
+        .all()
+    )
     return GameDetail(
         id=game.id,
         event=game.event,
@@ -250,88 +310,83 @@ def get_game(game_id: int, db: Session = Depends(get_db), current_user: User = D
         player_color=game.player_color,
         opponent=game.opponent,
         player_outcome=game.player_outcome,
+        opening=game.opening,
         time_class=game.time_class,
-        moves=[MoveOut.model_validate(m) for m in moves],
+        moves=[MoveOut.model_validate(move) for move in moves],
         coach_analysis=game.coach_analysis,
-        chat_history=[ChatMessageOut.model_validate(c) for c in chat_history],
+        chat_history=[ChatMessageOut.model_validate(message) for message in chat_history],
     )
 
-@router.get("", response_model=PaginatedGamesResponse)
-def list_games(db: Session = Depends(get_db), current_user: User = Depends(get_current_user), offset: int = Query(default=0, ge=0), limit: int = Query(default=10, ge=1, le=100)):
-    total_count = db.query(func.count(Game.id)).filter(Game.user_id == current_user.id).scalar()
 
-    games_records = (
-        db.query(Game)
+@router.get("", response_model=PaginatedGamesResponse)
+def list_games(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=10, ge=1, le=100),
+):
+    total = db.query(func.count(Game.id)).filter(Game.user_id == current_user.id).scalar() or 0
+    counts = (
+        db.query(
+            MoveRecord.game_id.label("game_id"),
+            func.sum(case((MoveRecord.classification == "Blunder", 1), else_=0)).label("blunders"),
+            func.sum(case((MoveRecord.classification == "Mistake", 1), else_=0)).label("mistakes"),
+            func.sum(case((MoveRecord.classification == "Inaccuracy", 1), else_=0)).label("inaccuracies"),
+        )
+        .filter(MoveRecord.is_player_move.is_(True))
+        .group_by(MoveRecord.game_id)
+        .subquery()
+    )
+    records = (
+        db.query(Game, counts.c.blunders, counts.c.mistakes, counts.c.inaccuracies)
+        .outerjoin(counts, counts.c.game_id == Game.id)
         .filter(Game.user_id == current_user.id)
         .order_by(Game.played_at.desc())
         .offset(offset)
         .limit(limit)
         .all()
     )
-
-    game_list = []
-    for g in games_records:
-        blunders = db.query(MoveRecord).filter(MoveRecord.game_id == g.id, MoveRecord.is_player_move == True, MoveRecord.classification == "Blunder").count()
-        mistakes = db.query(MoveRecord).filter(MoveRecord.game_id == g.id, MoveRecord.is_player_move == True, MoveRecord.classification == "Mistake").count()
-        inaccuracies = db.query(MoveRecord).filter(MoveRecord.game_id == g.id, MoveRecord.is_player_move == True, MoveRecord.classification == "Inaccuracy").count()
-
-        item = GameListItem(
-            id=g.id,
-            opponent=g.opponent,
-            result=g.result,
-            player_color=g.player_color,
-            played_at=g.played_at,
-            time_class=g.time_class,
-            player_outcome=g.player_outcome,
-            blunders=blunders,
-            mistakes=mistakes,
-            inaccuracies=inaccuracies,
-        )
-        game_list.append(item)
     return PaginatedGamesResponse(
-        total=total_count,
-        games=game_list,
+        total=total,
+        games=[
+            GameListItem(
+                id=game.id,
+                opponent=game.opponent,
+                result=game.result,
+                player_color=game.player_color,
+                played_at=game.played_at,
+                time_class=game.time_class,
+                player_outcome=game.player_outcome,
+                opening=game.opening,
+                blunders=int(blunders or 0),
+                mistakes=int(mistakes or 0),
+                inaccuracies=int(inaccuracies or 0),
+            )
+            for game, blunders, mistakes, inaccuracies in records
+        ],
     )
 
-@router.post("/{id}/analysis", response_model=AnalysisResponse)
+
+@router.post("/{id}/analysis", response_model=AnalysisResponse, dependencies=[Depends(rate_limit("analysis", 6, 60 * 60))])
 def analyze_game(id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     game = db.query(Game).filter(Game.id == id, Game.user_id == current_user.id).first()
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
-    ctx = {
-        "event": game.event,
-        "date": game.date,
-        "white": game.white,
-        "black": game.black,
-        "result": game.result,
-        "player": current_user.username,
-        "player_color": game.player_color,
-        "opponent": game.opponent,
-        "player_outcome": game.player_outcome,
-    }
     moves = db.query(MoveRecord).filter(MoveRecord.game_id == id).order_by(MoveRecord.ply).all()
-    move_dicts = [MoveOut.model_validate(m).model_dump() for m in moves]
-    game_format = format_game_context(ctx)
-    analysis_summary = build_analysis_summary(ctx, move_dicts)
-    messages = [
+    context = {
+        "event": game.event, "date": game.date, "white": game.white, "black": game.black,
+        "result": game.result, "player": current_user.username, "player_color": game.player_color,
+        "opponent": game.opponent, "player_outcome": game.player_outcome,
+    }
+    move_dicts = [MoveOut.model_validate(move).model_dump() for move in moves]
+    game_format = format_game_context(context)
+    summary = build_analysis_summary(context, move_dicts)
+    content = generate_analysis([
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user",
-            "content": f"### Game Details\n{game_format}\n\n### Move Analysis Summary\n{analysis_summary}"
-        }
-    ]
-    content = generate_analysis(messages)
+        {"role": "user", "content": f"### Game Details\n{game_format}\n\n### Engine Evidence\n{summary}"},
+    ])
     game.coach_analysis = content
+    if game.player_outcome == "Loss" and not db.query(InsightsRule.id).filter(InsightsRule.game_id == id).first():
+        db.add(InsightsRule(user_id=current_user.id, game_id=id, content=generate_key_takeaway(game_format, summary)))
     db.commit()
-
-    # One takeaway per lost game, generated once — an existing rule for
-    # this game means a previous request already covered it (this endpoint
-    # can be hit again, e.g. a page revisit before coach_analysis was
-    # cached client-side).
-    if game.player_outcome == "Loss":
-        existing_rule = db.query(InsightsRule.id).filter(InsightsRule.game_id == id).first()
-        if existing_rule is None:
-            takeaway = generate_key_takeaway(game_format, analysis_summary)
-            db.add(InsightsRule(user_id=current_user.id, game_id=id, content=takeaway))
-            db.commit()
-
     return AnalysisResponse(coach_analysis=content)

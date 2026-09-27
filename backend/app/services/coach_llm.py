@@ -203,7 +203,7 @@ def generate_move_explanation(
         f"### The move being reviewed\n"
         f"{label}: you played {san} ({classification}"
         + (f", lost {cp_loss}cp" if cp_loss is not None else "")
-        + f")\n"
+        + ")\n"
         + (f"Stronger move instead: {best_move}\n" if best_move else "")
     )
     response = client.chat.completions.create(

@@ -3,6 +3,7 @@ import { Route, Routes } from "react-router-dom";
 import { RequireAuth } from "@/lib/auth";
 import { AppShell } from "@/components/layout/AppShell";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
+import { AppErrorBoundary } from "@/components/shared/AppErrorBoundary";
 import Login from "@/pages/Login";
 import Dashboard from "@/pages/Dashboard";
 
@@ -27,8 +28,9 @@ function PageFallback() {
 
 export default function App() {
   return (
-    <Suspense fallback={<PageFallback />}>
-      <Routes>
+    <AppErrorBoundary title="Chess Coach could not start">
+      <Suspense fallback={<PageFallback />}>
+        <Routes>
         <Route path="/login" element={<Login />} />
 
         <Route
@@ -47,7 +49,8 @@ export default function App() {
         </Route>
 
         <Route path="*" element={<NotFound />} />
-      </Routes>
-    </Suspense>
+        </Routes>
+      </Suspense>
+    </AppErrorBoundary>
   );
 }
