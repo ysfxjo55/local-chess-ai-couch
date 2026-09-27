@@ -11,16 +11,17 @@ CHESSCOM_USERNAME_PATTERN = r"^[A-Za-z0-9_-]{3,64}$"
 
 class LoginRequest(BaseModel):
     username: str = Field(min_length=3, max_length=64, pattern=USERNAME_PATTERN)
-    password: str = Field(min_length=12, max_length=256)
+    password: str = Field(min_length=8, max_length=256)
 
 
 class RegisterRequest(LoginRequest):
+    password: str = Field(min_length=12, max_length=256)
     registration_code: str | None = Field(default=None, max_length=256)
 
 
 class ClaimAccountRequest(BaseModel):
     chesscom_username: str = Field(min_length=3, max_length=64, pattern=CHESSCOM_USERNAME_PATTERN)
-    password: str = Field(min_length=12, max_length=256)
+    password: str = Field(min_length=8, max_length=256)
     claim_code: str = Field(min_length=8, max_length=256)
 
 

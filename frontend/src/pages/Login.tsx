@@ -41,7 +41,7 @@ export default function Login() {
   const creating = mode === "create";
   const claiming = mode === "claim";
   const identityReady = claiming ? chesscomUsername.trim().length >= 3 : username.trim().length >= 3;
-  const passwordMinLength = mode === "sign-in" ? 1 : 12;
+  const passwordMinLength = creating ? 12 : 8;
   const passwordTooShort = password.length > 0 && password.length < passwordMinLength;
   const claimCodeTooShort = claimCode.length > 0 && claimCode.length < 8;
   const switchMode = (next: AccessMode) => {
@@ -86,13 +86,13 @@ export default function Login() {
             )}
             <div className="space-y-2">
               <Label htmlFor="password">{claiming ? "New password" : "Password"}</Label>
-              <Input id="password" type="password" autoComplete={mode === "sign-in" ? "current-password" : "new-password"} placeholder={mode === "sign-in" ? "Your password" : "At least 12 characters"} value={password} onChange={(event) => setPassword(event.target.value)} aria-invalid={passwordTooShort} aria-describedby="password-help" required minLength={passwordMinLength} maxLength={256} />
+              <Input id="password" type="password" autoComplete={mode === "sign-in" ? "current-password" : "new-password"} placeholder={mode === "sign-in" ? "Your password" : `At least ${passwordMinLength} characters`} value={password} onChange={(event) => setPassword(event.target.value)} aria-invalid={passwordTooShort} aria-describedby="password-help" required minLength={passwordMinLength} maxLength={256} />
               {passwordTooShort ? (
-                <p id="password-help" className="text-xs text-blunder">Need at least 12 characters ({password.length}/12 so far).</p>
+                <p id="password-help" className="text-xs text-blunder">Need at least {passwordMinLength} characters ({password.length}/{passwordMinLength} so far).</p>
               ) : creating ? (
                 <p id="password-help" className="text-xs text-ink-muted">Use at least 12 characters. Your Chess.com username is connected after sign-in.</p>
               ) : claiming ? (
-                <p id="password-help" className="text-xs text-ink-muted">Use at least 12 characters for your new password.</p>
+                <p id="password-help" className="text-xs text-ink-muted">Use at least 8 characters for your new password.</p>
               ) : null}
             </div>
             {creating && (
