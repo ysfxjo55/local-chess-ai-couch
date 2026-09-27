@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import type { SyncStatusResponse } from "@/lib/apiTypes";
 
 export function useGamesList(limit: number, offset: number) {
@@ -74,7 +74,7 @@ export function useSyncGames() {
           invalidateAfterSync();
         } else if (status.status === "error") {
           setIsPending(false);
-          setError(new Error(status.error ?? "Sync failed"));
+          setError(new ApiError(500, status.error ?? "Sync failed"));
         }
       };
       if (initial.status === "done" || initial.status === "error") {

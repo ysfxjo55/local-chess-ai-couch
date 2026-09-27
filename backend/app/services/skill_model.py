@@ -49,6 +49,10 @@ def _upsert_state(db: Session, user_id: int, key: str, weight: float, occurred_a
     state.confidence = round(min(0.95, state.evidence_count / 12), 4)
     state.priority = round((1 - state.mastery) * state.confidence, 4)
     state.last_evidence_at = occurred_at
+    # autoflush is off (see db.py); without this, two moves in the same game
+    # hitting the same skill_key would both try to INSERT a new row, since
+    # the second lookup can't see the first one's still-pending insert.
+    db.flush()
 
 
 def record_engine_evidence(db: Session, user_id: int, game: Game, moves: list[MoveRecord]) -> int:

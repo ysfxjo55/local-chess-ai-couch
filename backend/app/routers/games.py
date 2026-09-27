@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import threading
 import uuid
 from datetime import datetime
@@ -41,6 +42,7 @@ from ..services.stockfish_analysis import (
 )
 
 router = APIRouter(prefix="/api/games", tags=["games"])
+logger = logging.getLogger(__name__)
 _sync_create_lock = threading.Lock()
 
 
@@ -156,6 +158,7 @@ def _run_sync_job(job_id: str, user_id: int, chesscom_username: str) -> None:
         _update_job(db, job)
         _do_sync(db, job, user_id, chesscom_username)
     except Exception:
+        logger.exception("Sync job %s failed for user %s", job_id, user_id)
         db.rollback()
         job = db.get(SyncJob, job_id)
         if job:
